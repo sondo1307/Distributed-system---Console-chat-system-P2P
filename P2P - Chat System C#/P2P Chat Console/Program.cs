@@ -47,6 +47,12 @@ namespace P2PFinalChat
 
         static async Task Main(string[] args)
         {
+            Console.WriteLine("=== P2P CHAT PROFESSIONAL ===");
+            Console.ReadLine();
+        }
+        /*
+        static async Task Main(string[] args)
+        {
             Console.InputEncoding = Encoding.Unicode;
             Console.OutputEncoding = Encoding.Unicode;
             Console.Title = "P2P Chat Professional";
@@ -130,6 +136,7 @@ namespace P2PFinalChat
                 }
             }
         }
+        */
 
         // --- HANDSHAKE ---
         private static void SendHelloPacket(TcpClient client)

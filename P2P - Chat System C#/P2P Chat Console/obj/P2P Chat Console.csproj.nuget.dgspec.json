@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj": {}
+    "D:\\Distributed-system---Console-chat-system-P2P\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj": {}
   },
   "projects": {
-    "D:\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj": {
+    "D:\\Distributed-system---Console-chat-system-P2P\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj",
+        "projectUniqueName": "D:\\Distributed-system---Console-chat-system-P2P\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj",
         "projectName": "P2P Chat Console",
-        "projectPath": "D:\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj",
+        "projectPath": "D:\\Distributed-system---Console-chat-system-P2P\\P2P - Chat System C#\\P2P Chat Console\\P2P Chat Console.csproj",
         "packagesPath": "C:\\Users\\Son-LAPTOP\\.nuget\\packages\\",
-        "outputPath": "D:\\P2P - Chat System C#\\P2P Chat Console\\obj\\",
+        "outputPath": "D:\\Distributed-system---Console-chat-system-P2P\\P2P - Chat System C#\\P2P Chat Console\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
