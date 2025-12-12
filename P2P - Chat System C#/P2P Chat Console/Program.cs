@@ -45,12 +45,7 @@ namespace P2PFinalChat
         private static string _myServerIp;
         private static int _myServerPort;
 
-        static async Task Main(string[] args)
-        {
-            Console.WriteLine("=== P2P CHAT PROFESSIONAL ===");
-            Console.ReadLine();
-        }
-        /*
+        
         static async Task Main(string[] args)
         {
             Console.InputEncoding = Encoding.Unicode;
@@ -136,7 +131,7 @@ namespace P2PFinalChat
                 }
             }
         }
-        */
+        
 
         // --- HANDSHAKE ---
         private static void SendHelloPacket(TcpClient client)

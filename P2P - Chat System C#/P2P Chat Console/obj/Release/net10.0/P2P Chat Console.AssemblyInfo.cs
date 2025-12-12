@@ -16,7 +16,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCopyrightAttribute("Copyright © 2024")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Ung dung chat noi bo an toan")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+da5fed40d8fa5b4c91e7158694d556c0082f45b3")]
 [assembly: System.Reflection.AssemblyProductAttribute("P2P Chat System")]
 [assembly: System.Reflection.AssemblyTitleAttribute("P2P Chat Console")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
