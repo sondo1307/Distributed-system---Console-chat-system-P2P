@@ -1,0 +1,5 @@
+D:\P2P - Chat System C#\P2P Chat Console.exe
+D:\P2P - Chat System C#\P2P Chat Console.dll
+D:\P2P - Chat System C#\P2P Chat Console.deps.json
+D:\P2P - Chat System C#\P2P Chat Console.runtimeconfig.json
+D:\P2P - Chat System C#\P2P Chat Console.pdb
