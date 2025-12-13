@@ -5,15 +5,51 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace P2PFinalJson
 {
+    public static class ConsoleHelper
+    {
+        private const int GWL_STYLE = -16;
+        private const int WS_MAXIMIZEBOX = 0x10000;
+        private const int WS_THICKFRAME = 0x40000;
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetConsoleWindow();
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+
+        public static void SetupWindow()
+        {
+            IntPtr handle = GetConsoleWindow();
+
+            // 1. Vô hiệu hóa nút Maximize và kéo giãn (Resize)
+            int style = GetWindowLong(handle, GWL_STYLE);
+            style = style & ~WS_MAXIMIZEBOX; // Tắt nút Maximize
+            style = style & ~WS_THICKFRAME;  // Tắt viền kéo giãn
+            SetWindowLong(handle, GWL_STYLE, style);
+
+            // 2. Đặt kích thước Pixel cố định (1500x750)
+            // Tọa độ xuất hiện (200, 100) để không bị che khuất
+            MoveWindow(handle, 200, 100, 1500, 750, true);
+        }
+    }
+
     // --- MODELS ---
-    public enum PacketType { Hello, System, Message, Edit, Delete, Invite, Ping } // Thêm Ping
+    public enum PacketType { Hello, System, Message, Edit, Delete, Invite, Ping }
 
     public class UserConfig
     {
@@ -116,7 +152,6 @@ namespace P2PFinalJson
             }
         }
 
-        // [MỚI] QUẢN LÝ BẠN BÈ
         public static List<Friend> LoadFriends()
         {
             lock (_fileLock)
@@ -126,15 +161,25 @@ namespace P2PFinalJson
             }
         }
 
-        public static void AddFriend(string name, string ip, int port)
+        public static bool AddFriend(string name, string ip, int port)
         {
             lock (_fileLock)
             {
                 var list = LoadFriends();
-                // Xóa cũ nếu trùng IP:Port để cập nhật tên mới
+
+                // [MỚI] Kiểm tra trùng tên (Không phân biệt hoa thường)
+                if (list.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return false; // Trả về false báo lỗi
+                }
+
+                // Logic cũ: Xóa IP cũ nếu trùng để cập nhật
                 list.RemoveAll(x => x.Ip == ip && x.Port == port);
+
                 list.Add(new Friend { Name = name, Ip = ip, Port = port });
                 File.WriteAllText(FriendsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
+
+                return true; // Trả về true báo thành công
             }
         }
 
@@ -189,7 +234,6 @@ namespace P2PFinalJson
         }
     }
 
-    // --- MAIN PROGRAM ---
     class Program
     {
         static UserConfig _currentUser;
@@ -199,11 +243,12 @@ namespace P2PFinalJson
         static object _uiLock = new object();
         static List<ChatPacket> _currentViewMap = new List<ChatPacket>();
 
-        // [MỚI] Danh sách bạn bè runtime
         static List<Friend> _myFriends = new List<Friend>();
 
         static async Task Main(string[] args)
         {
+            ConsoleHelper.SetupWindow();
+
             Console.InputEncoding = Encoding.Unicode;
             Console.OutputEncoding = Encoding.Unicode;
 
@@ -287,20 +332,24 @@ namespace P2PFinalJson
             {
                 Console.Clear();
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine("=== P2P CHAT PRO (FRIEND UPDATE) ===");
+                Console.WriteLine("=== P2P CHAT ===");
                 Console.ResetColor();
 
                 var config = JsonManager.LoadConfig();
                 if (config != null)
                 {
-                    Console.WriteLine($"Chao mung {config.Username} (Port: {config.Port})");
-                    Console.WriteLine("[1] Tiep tuc | [2] Doi thong tin");
+                    Console.WriteLine($"Chào mừng {config.Username} (Port: {config.Port})");
+                    Console.WriteLine("[1] Tiếp tục vào hệ thống | [2] Thay đổi thông tin");
                     if (Console.ReadLine() == "1") { _currentUser = config; return; }
                 }
 
-                Console.Write("Nhap Ten: ");
+                Console.Write("Nhập tên: ");
                 string name = Console.ReadLine();
-                Console.Write("Nhap Port (VD: 9000): ");
+                if (!name.Any(char.IsLetter))
+                {
+                    continue;
+                }
+                Console.Write("Nhập port (VD: 9000): ");
                 if (int.TryParse(Console.ReadLine(), out int port))
                 {
                     _currentUser = new UserConfig { Username = name, Port = port };
@@ -322,10 +371,10 @@ namespace P2PFinalJson
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"[INFO] IP: {GetLocalIP()} | PORT: {_currentUser.Port}");
                 Console.ResetColor();
-                Console.WriteLine("LENH CHUNG:");
-                Console.WriteLine(" [N <Ten>] Tao chat moi | [J] Join ID | [RESET] Xoa data | [Ctrl+R] Refresh");
-                Console.WriteLine("LENH BAN BE:");
-                Console.WriteLine(" [F] Them ban be       | [L] Danh sach & Trang thai");
+                Console.WriteLine("NEUTRAL COMMAND:");
+                Console.WriteLine(" [N <Name of the group chat>] New group chat | [J] Join                    | [RESET] Reset all data | [Ctrl+R] Refresh");
+                Console.WriteLine("PHONEBOOK COMMAND:");
+                Console.WriteLine(" [F] Add friend/ contact                     | [L] List friends/ contacts");
                 Console.WriteLine("-------------------------------------------------------------");
 
                 var sessions = JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList();
@@ -345,21 +394,29 @@ namespace P2PFinalJson
                 // [MỚI] THÊM BẠN
                 if (input.Equals("F", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.WriteLine("--- THEM BAN BE ---");
-                    Console.Write("Nhap IP: "); string ip = Console.ReadLine();
-                    Console.Write("Nhap Port: "); int.TryParse(Console.ReadLine(), out int p);
-                    Console.Write("Nhap Ten Goi Nho: "); string n = Console.ReadLine();
-                    JsonManager.AddFriend(n, ip, p);
-                    Console.WriteLine("Da luu vao danh ba!");
+
+                    Console.WriteLine("--- Add friend ---");
+                    Console.Write("IP: "); string ip = Console.ReadLine();
+                    Console.Write("Port: "); int.TryParse(Console.ReadLine(), out int p);
+                    Console.Write("Nickname: "); string n = Console.ReadLine();
+
+                    if (JsonManager.AddFriend(n, ip, p))
+                    {
+                        Console.WriteLine("Add to contacts success!");
+                    }
+                    else
+                    {
+                        Console.WriteLine("[ERROR] Name already exists! Please choose another name.");
+                    }
                     Thread.Sleep(1000);
                 }
                 // [MỚI] DANH SÁCH BẠN
                 else if (input.Equals("L", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.Clear();
-                    Console.WriteLine("--- DANH SACH BAN BE ---");
+                    Console.WriteLine("--- List friends ---");
                     // _myFriends được cập nhật bởi background task
-                    if (_myFriends.Count == 0) Console.WriteLine("(Chua co ban be)");
+                    if (_myFriends.Count == 0) Console.WriteLine("(You have zero friend)");
 
                     foreach (var f in _myFriends)
                     {
@@ -376,7 +433,7 @@ namespace P2PFinalJson
                         }
                         Console.ResetColor();
                     }
-                    Console.WriteLine("\nAn Enter de quay lai...");
+                    Console.WriteLine("\nPress Enter to back to DASHBOARD...");
                     Console.ReadLine();
                 }
 
@@ -390,12 +447,12 @@ namespace P2PFinalJson
                 }
                 else if (input.Equals("RESET", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.Write("XOA DATA? (Y/N): ");
+                    Console.Write("CONFIRM DELETING DATA? (Y/N): ");
                     if (Console.ReadLine()?.ToUpper() == "Y") { JsonManager.DeleteAllData(); return "RESET_APP"; }
                 }
                 else if (input.Equals("J", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.Write("Nhap: <IP> <Port> <RoomID>: ");
+                    Console.Write("Input: <IP> <Port> <RoomID>: ");
                     string joinCmd = Console.ReadLine();
                     var parts = joinCmd.Split(' ');
                     if (parts.Length == 3 && int.TryParse(parts[1], out int p))
@@ -403,7 +460,7 @@ namespace P2PFinalJson
                         string targetId = parts[2];
                         JsonManager.UpsertSession(targetId, "Joining...");
                         _ = ConnectAndJoin(parts[0], p, targetId);
-                        Console.WriteLine("Dang ket noi...");
+                        Console.WriteLine("Connecting...");
                         Thread.Sleep(1000);
                         return targetId;
                     }
@@ -437,9 +494,9 @@ namespace P2PFinalJson
                     if (friend != null)
                     {
                         await ConnectAndJoin(friend.Ip, friend.Port, sessionId);
-                        Console.WriteLine($"[SYSTEM] Da moi {friend.Name} ({friend.Ip}:{friend.Port})");
+                        Console.WriteLine($"[SYSTEM] Invited {friend.Name} ({friend.Ip}:{friend.Port})");
                     }
-                    else Console.WriteLine("[LOI] Khong tim thay ten nay trong danh ba.");
+                    else Console.WriteLine("[ERROR] Cannot find friend in contact list.");
                 }
 
                 else if (input.StartsWith("/join "))
@@ -568,14 +625,14 @@ namespace P2PFinalJson
                     Type = PacketType.Invite,
                     SenderName = _currentUser.Username,
                     SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
-                    Content = "Hello!",
+                    Content = "Hello! I am added you to this group",
                     Timestamp = DateTime.Now
                 };
                 var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
                 await w.WriteLineAsync(JsonSerializer.Serialize(packet));
                 _ = Task.Run(() => HandleClient(c));
             }
-            catch { Console.WriteLine($"[LOI] Khong ket noi duoc {ip}:{port}"); }
+            catch { Console.WriteLine($"[ERROR] Connection error to {ip}:{port}"); }
         }
 
         static void HandleEditCommand(int index, string newContent, string sessionId)
@@ -598,7 +655,7 @@ namespace P2PFinalJson
                     };
                     ProcessPacket(p); Broadcast(p);
                 }
-                else Console.WriteLine("[LOI] Chi duoc sua tin cua minh.");
+                else Console.WriteLine("[ERROR] You ONLY allow to edit your message.");
             }
         }
 
@@ -621,7 +678,7 @@ namespace P2PFinalJson
                     };
                     ProcessPacket(p); Broadcast(p);
                 }
-                else Console.WriteLine("[LOI] Chi duoc xoa tin cua minh.");
+                else Console.WriteLine("[ERROR] You ONLY allow to delete your message.");
             }
         }
 
@@ -635,7 +692,7 @@ namespace P2PFinalJson
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"[MY INFO] IP: {GetLocalIP()} | Port: {_currentUser.Port}");
                 Console.ResetColor();
-                Console.WriteLine("Commands: /back, /invite <IP> <Port>, /edit, /delete, /invitefriend <Ten>");
+                Console.WriteLine("Commands: /back, /invite <IP> <Port>, /edit, /delete, /invitefriend <Nickname>");
                 Console.WriteLine("---------------------------------------------------------");
                 var msgs = JsonManager.GetMessages(sessionId).OrderBy(x => x.Timestamp).ToList();
                 _currentViewMap.Clear();
