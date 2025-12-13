@@ -441,7 +441,7 @@ namespace P2PFinalJson
                 else if (input.StartsWith("N ", StringComparison.OrdinalIgnoreCase))
                 {
                     string chatName = input.Substring(2).Trim();
-                    string newId = Guid.NewGuid().ToString();
+                    string newId = GenerateShortId();
                     JsonManager.UpsertSession(newId, string.IsNullOrEmpty(chatName) ? "New Chat" : chatName);
                     return newId;
                 }
@@ -729,6 +729,15 @@ namespace P2PFinalJson
             var host = Dns.GetHostEntry(Dns.GetHostName());
             foreach (var ip in host.AddressList) if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString();
             return "127.0.0.1";
+        }
+
+        // [MỚI] Hàm tạo ID ngắn 6 ký tự (Chữ in hoa + Số)
+        private static string GenerateShortId()
+        {
+            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            Random random = new Random();
+            return new string(Enumerable.Repeat(chars, 6)
+                .Select(s => s[random.Next(s.Length)]).ToArray());
         }
     }
 }
