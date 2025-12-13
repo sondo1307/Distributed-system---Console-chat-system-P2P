@@ -1,0 +1,10 @@
+- Báo cáo:
++ Phân tích yêu cầu ( liệt kê cụ thể các tính năng được triển khai)
++ Thiết kế phần mềm
+- HDSD
+- Source code
+
+- Deadline: 30/12/2025
+
+- Link doc:
+https://docs.google.com/spreadsheets/d/1nywjotsTQVmI71kp_zvGolJCRw9Yx-O__-S4NQmZOnU/edit?gid=0#gid=0

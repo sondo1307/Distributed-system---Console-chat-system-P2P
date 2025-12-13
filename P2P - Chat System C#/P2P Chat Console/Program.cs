@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -9,551 +10,545 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace P2PFinalChat
+namespace P2PFinalJson
 {
-    public enum PacketType
+    // --- MODELS ---
+    public enum PacketType { Hello, System, Message, Edit, Delete, Invite }
+
+    public class UserConfig
     {
-        Hello,   // Gói tin chào hỏi (Handshake)
-        System,  // Gói tin thông báo hệ thống
-        Message, // Tin nhắn thường
-        Edit,    // Lệnh sửa
-        Delete,  // Lệnh xóa
-        Invite   // [MOI] Gói tin mời
+        public string Username { get; set; }
+        public int Port { get; set; }
+    }
+
+    public class ChatSession
+    {
+        public string SessionId { get; set; }
+        public string Name { get; set; }
+        public DateTime LastActive { get; set; }
     }
 
     public class ChatPacket
     {
         public string Id { get; set; }
-        public PacketType Type { get; set; }
         public string TargetId { get; set; }
-
+        public string SessionId { get; set; }
+        public PacketType Type { get; set; }
         public string SenderName { get; set; }
         public string SenderInfo { get; set; }
         public string Content { get; set; }
         public DateTime Timestamp { get; set; }
-        public bool IsHistory { get; set; }
     }
 
+    // --- JSON MANAGER ---
+    public static class JsonManager
+    {
+        private static readonly string DataFolder = "Data";
+        private static readonly string ConfigFile = Path.Combine(DataFolder, "config.json");
+        private static readonly string SessionsFile = Path.Combine(DataFolder, "sessions.json");
+        private static readonly object _fileLock = new object();
+
+        public static void Initialize()
+        {
+            if (!Directory.Exists(DataFolder)) Directory.CreateDirectory(DataFolder);
+            if (!File.Exists(SessionsFile)) File.WriteAllText(SessionsFile, "[]");
+        }
+
+        public static void DeleteAllData()
+        {
+            lock (_fileLock)
+            {
+                if (Directory.Exists(DataFolder))
+                {
+                    Directory.Delete(DataFolder, true);
+                    Initialize();
+                }
+            }
+        }
+
+        public static UserConfig LoadConfig()
+        {
+            lock (_fileLock)
+            {
+                if (!File.Exists(ConfigFile)) return null;
+                try { return JsonSerializer.Deserialize<UserConfig>(File.ReadAllText(ConfigFile)); } catch { return null; }
+            }
+        }
+
+        public static void SaveConfig(UserConfig config)
+        {
+            lock (_fileLock)
+            {
+                File.WriteAllText(ConfigFile, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
+            }
+        }
+
+        public static List<ChatSession> LoadSessions()
+        {
+            lock (_fileLock)
+            {
+                if (!File.Exists(SessionsFile)) return new List<ChatSession>();
+                try { return JsonSerializer.Deserialize<List<ChatSession>>(File.ReadAllText(SessionsFile)) ?? new List<ChatSession>(); }
+                catch { return new List<ChatSession>(); }
+            }
+        }
+
+        public static void UpsertSession(string sessionId, string name)
+        {
+            lock (_fileLock)
+            {
+                var list = LoadSessions();
+                var existing = list.FirstOrDefault(s => s.SessionId == sessionId);
+                if (existing != null)
+                {
+                    existing.LastActive = DateTime.Now;
+                    if (!string.IsNullOrEmpty(name)) existing.Name = name;
+                }
+                else
+                {
+                    list.Add(new ChatSession { SessionId = sessionId, Name = name, LastActive = DateTime.Now });
+                }
+                File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
+            }
+        }
+
+        public static List<ChatPacket> GetMessages(string sessionId)
+        {
+            lock (_fileLock)
+            {
+                string path = Path.Combine(DataFolder, $"msg_{sessionId}.json");
+                if (!File.Exists(path)) return new List<ChatPacket>();
+                try { return JsonSerializer.Deserialize<List<ChatPacket>>(File.ReadAllText(path)) ?? new List<ChatPacket>(); }
+                catch { return new List<ChatPacket>(); }
+            }
+        }
+
+        public static void HandlePacketStorage(ChatPacket p)
+        {
+            lock (_fileLock)
+            {
+                if (p.SessionId != null)
+                    UpsertSession(p.SessionId, p.Type == PacketType.Invite ? $"Chat with {p.SenderName}" : null);
+
+                string path = Path.Combine(DataFolder, $"msg_{p.SessionId}.json");
+                List<ChatPacket> msgs = File.Exists(path)
+                    ? (JsonSerializer.Deserialize<List<ChatPacket>>(File.ReadAllText(path)) ?? new List<ChatPacket>())
+                    : new List<ChatPacket>();
+
+                if (p.Type == PacketType.Message || p.Type == PacketType.Invite || p.Type == PacketType.System)
+                {
+                    if (!msgs.Any(x => x.Id == p.Id)) msgs.Add(p);
+                }
+                else if (p.Type == PacketType.Edit)
+                {
+                    var target = msgs.FirstOrDefault(x => x.Id == p.TargetId);
+                    if (target != null) target.Content = p.Content + " (edited)";
+                }
+                else if (p.Type == PacketType.Delete)
+                {
+                    var target = msgs.FirstOrDefault(x => x.Id == p.TargetId);
+                    if (target != null) msgs.Remove(target);
+                }
+
+                File.WriteAllText(path, JsonSerializer.Serialize(msgs, new JsonSerializerOptions { WriteIndented = true }));
+            }
+        }
+    }
+
+    // --- MAIN PROGRAM ---
     class Program
     {
-        private static List<TcpClient> _neighbors = new List<TcpClient>();
-        private static List<ChatPacket> _messageHistory = new List<ChatPacket>();
-
-        private static object _lock = new object();
-        private static ConcurrentDictionary<string, byte> _seenMessages = new ConcurrentDictionary<string, byte>();
-
-        private static string _username;
-        private static string _myServerIp;
-        private static int _myServerPort;
+        static UserConfig _currentUser;
+        static TcpListener _server;
+        static List<TcpClient> _neighbors = new List<TcpClient>();
+        static string _currentSessionId = null;
+        static object _uiLock = new object();
+        static List<ChatPacket> _currentViewMap = new List<ChatPacket>();
 
         static async Task Main(string[] args)
         {
             Console.InputEncoding = Encoding.Unicode;
             Console.OutputEncoding = Encoding.Unicode;
-            Console.Title = "P2P Chat Professional";
+            JsonManager.Initialize();
 
-            // 1. Cấu hình ban đầu
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("=== P2P CHAT PROFESSIONAL ===");
-            Console.ResetColor();
-
-            Console.Write("Nhap ten cua ban: ");
-            _username = Console.ReadLine();
-
-            TcpListener listener = null;
             while (true)
             {
-                Console.Write("Nhap cong (Port) de mo (VD: 9000): ");
-                if (int.TryParse(Console.ReadLine(), out _myServerPort))
+                if (_currentUser == null)
                 {
-                    try
-                    {
-                        listener = new TcpListener(IPAddress.Any, _myServerPort);
-                        listener.Start();
-                        break;
-                    }
-                    catch { Console.WriteLine("[LOI] Port ban chon khong kha dung."); }
+                    await Screen_Login();
+                    _ = Task.Run(() => StartServer());
+                }
+
+                string selectedSession = Screen_Dashboard();
+
+                if (selectedSession == "RESET_APP")
+                {
+                    _currentUser = null;
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(selectedSession))
+                {
+                    await Screen_ChatRoom(selectedSession);
                 }
             }
+        }
 
-            _myServerIp = GetLocalIPAddress();
+        // --- SCREEN 1: LOGIN ---
+        static async Task Screen_Login()
+        {
+            while (true)
+            {
+                Console.Clear();
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("=== P2P CHAT PRO (JSON STORE) ===");
+                Console.ResetColor();
 
-            // Khởi chạy Server lắng nghe
-            _ = Task.Run(() => AcceptClientsAsync(listener));
+                var config = JsonManager.LoadConfig();
+                if (config != null)
+                {
+                    Console.WriteLine($"Chao mung {config.Username} (Port: {config.Port})");
+                    Console.WriteLine("[1] Tiep tuc | [2] Doi thong tin");
+                    var k = Console.ReadLine();
+                    if (k == "1") { _currentUser = config; return; }
+                }
 
-            // Vẽ giao diện lần đầu tiên
-            RedrawConsole();
+                Console.WriteLine("--- THIET LAP MOI ---");
+                Console.Write("Nhap Ten: ");
+                string name = Console.ReadLine();
+                Console.Write("Nhap Port (VD: 9000): ");
+                if (int.TryParse(Console.ReadLine(), out int port))
+                {
+                    _currentUser = new UserConfig { Username = name, Port = port };
+                    JsonManager.SaveConfig(_currentUser);
+                    return;
+                }
+            }
+        }
 
-            // 2. Vòng lặp chính
+        // --- SCREEN 2: DASHBOARD ---
+        static string Screen_Dashboard()
+        {
+            _currentSessionId = null;
+            while (true)
+            {
+                Console.Clear();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"=== DASHBOARD: {_currentUser.Username} ===");
+                Console.ResetColor();
+                Console.WriteLine("LENH:");
+                Console.WriteLine(" - Tao moi:    N <Ten doan chat>");
+                Console.WriteLine(" - Xoa data:   RESET");
+                Console.WriteLine(" - Join Room:  J (Nhap IP, Port, RoomID)");
+                Console.WriteLine("----------------------------------");
+
+                var sessions = JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList();
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    Console.WriteLine($"[{i + 1}] {sessions[i].Name} (ID: {sessions[i].SessionId.Substring(0, 4)}...)");
+                }
+
+                Console.WriteLine("----------------------------------");
+                Console.Write("Nhap lua chon: ");
+                string input = Console.ReadLine()?.Trim();
+
+                if (string.IsNullOrEmpty(input)) continue;
+
+                // Tạo mới
+                if (input.StartsWith("N ", StringComparison.OrdinalIgnoreCase))
+                {
+                    string chatName = input.Substring(2).Trim();
+                    string newId = Guid.NewGuid().ToString();
+                    JsonManager.UpsertSession(newId, string.IsNullOrEmpty(chatName) ? "New Chat" : chatName);
+                    return newId;
+                }
+
+                // Reset
+                if (input.Equals("RESET", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("XOA SACH DU LIEU? (Y/N): ");
+                    if (Console.ReadLine()?.ToUpper() == "Y")
+                    {
+                        JsonManager.DeleteAllData();
+                        return "RESET_APP";
+                    }
+                    Console.ResetColor();
+                }
+
+                // [THAY ĐỔI] Join bằng ID + IP
+                else if (input.Equals("J", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("De vao phong, ban can IP va Port cua chu phong.");
+                    Console.Write("Nhap theo cu phap: <IP> <Port> <RoomID>: ");
+                    string joinCmd = Console.ReadLine(); // VD: 192.168.1.5 9000 abc-123
+
+                    var parts = joinCmd.Split(' ');
+                    if (parts.Length == 3 && int.TryParse(parts[1], out int p))
+                    {
+                        string targetId = parts[2];
+                        // Lưu session trước để vào được phòng
+                        JsonManager.UpsertSession(targetId, "Joining...");
+                        // Thực hiện kết nối ngầm
+                        _ = ConnectAndJoin(parts[0], p, targetId);
+
+                        Console.WriteLine("Dang ket noi...");
+                        Thread.Sleep(1000);
+                        return targetId;
+                    }
+                    else Console.WriteLine("[LOI] Sai cu phap! Can: IP Port RoomID");
+                    Thread.Sleep(2000);
+                }
+
+                // Chọn cũ
+                else if (int.TryParse(input, out int idx) && idx > 0 && idx <= sessions.Count)
+                {
+                    return sessions[idx - 1].SessionId;
+                }
+            }
+        }
+
+        // --- SCREEN 3: CHAT ROOM ---
+        static async Task Screen_ChatRoom(string sessionId)
+        {
+            _currentSessionId = sessionId;
+            RedrawChat(sessionId);
+
             while (true)
             {
                 string input = Console.ReadLine();
                 if (string.IsNullOrWhiteSpace(input)) continue;
 
-                if (input.StartsWith("/connect"))
+                if (input == "/back") return;
+
+                // [THAY ĐỔI] Lệnh Join trong phòng chat
+                if (input.StartsWith("/join "))
                 {
-                    var parts = input.Split(' ');
-                    if (parts.Length == 3)
-                        await ConnectToPeer(parts[1], int.Parse(parts[2]));
+                    var p = input.Split(' ');
+                    if (p.Length == 4) // /join IP Port RoomID
+                    {
+                        await ConnectAndJoin(p[1], int.Parse(p[2]), p[3]);
+                        // Nếu ID khác phòng hiện tại, user cần gõ /back để ra dashboard chọn lại, hoặc tự động switch?
+                        // Ở đây ta giữ nguyên phòng hiện tại, chỉ thiết lập kết nối.
+                        Console.WriteLine("[SYSTEM] Da ket noi them.");
+                    }
+                    else Console.WriteLine("Sai cu phap. Dung: /join <IP> <Port> <RoomID>");
                 }
-                else if (input.Trim() == "/list")
+                // Các lệnh cũ
+                else if (input.StartsWith("/invite "))
                 {
-                    ShowNeighbors();
+                    var p = input.Split(' ');
+                    if (p.Length == 3) await ConnectAndJoin(p[1], int.Parse(p[2]), sessionId);
                 }
                 else if (input.StartsWith("/edit "))
                 {
                     var parts = input.Split(' ', 3);
                     if (parts.Length == 3 && int.TryParse(parts[1], out int index))
-                        HandleEditSpecificMessage(index, parts[2]);
+                        HandleEditCommand(index, parts[2], sessionId);
                 }
-                else if (input.StartsWith("/delete"))
+                else if (input.StartsWith("/delete "))
                 {
                     var parts = input.Split(' ');
                     if (parts.Length == 2 && int.TryParse(parts[1], out int index))
-                        HandleDeleteSpecificMessage(index);
+                        HandleDeleteCommand(index, sessionId);
                 }
-                // --- [MOI] CÁC LỆNH INVITE / TOKEN ---
-                else if (input.StartsWith("/invite "))
-                {
-                    var parts = input.Split(' ');
-                    if (parts.Length == 3)
-                    {
-                        // Gọi hàm kết nối kiểu Invite
-                        await ConnectAndInvite(parts[1], int.Parse(parts[2]));
-                    }
-                    else AddSystemLog("Sai cu phap. Dung: /invite <IP> <Port>");
-                }
-                else if (input.Trim() == "/token")
-                {
-                    GenerateInviteToken();
-                }
-                else if (input.StartsWith("/join "))
-                {
-                    string token = input.Substring(6).Trim();
-                    JoinByToken(token);
-                }
-                // -------------------------------------
                 else
                 {
-                    // GỬI TIN NHẮN THƯỜNG
                     var packet = new ChatPacket
                     {
                         Id = Guid.NewGuid().ToString(),
+                        SessionId = sessionId,
                         Type = PacketType.Message,
-                        SenderName = _username,
-                        SenderInfo = $"{_myServerIp}:{_myServerPort}",
+                        SenderName = _currentUser.Username,
+                        SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
                         Content = input,
-                        Timestamp = DateTime.Now,
-                        IsHistory = false
+                        Timestamp = DateTime.Now
                     };
-
-                    ProcessIncomingPacket(packet);
-                    BroadcastJson(JsonSerializer.Serialize(packet), null);
+                    ProcessPacket(packet);
+                    Broadcast(packet);
                 }
             }
         }
 
-        // --- HANDSHAKE (GIỮ NGUYÊN) ---
-        private static void SendHelloPacket(TcpClient client)
+        // --- NETWORK & LOGIC ---
+        static void StartServer()
         {
             try
             {
-                var helloPacket = new ChatPacket
+                if (_server == null)
                 {
-                    Id = Guid.NewGuid().ToString(),
-                    Type = PacketType.Hello,
-                    SenderName = _username,
-                    SenderInfo = $"{_myServerIp}:{_myServerPort}",
-                    Timestamp = DateTime.Now
-                };
-
-                NetworkStream stream = client.GetStream();
-                StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-                writer.WriteLine(JsonSerializer.Serialize(helloPacket));
-            }
-            catch { }
-        }
-
-        // --- [MOI] GỬI GÓI TIN MỜI (INVITE) ---
-        private static void SendInvitePacket(TcpClient client)
-        {
-            try
-            {
-                var invitePacket = new ChatPacket
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    Type = PacketType.Invite, // Đánh dấu là Invite
-                    SenderName = _username,
-                    SenderInfo = $"{_myServerIp}:{_myServerPort}",
-                    Content = "da moi ban tham gia chat!",
-                    Timestamp = DateTime.Now
-                };
-
-                NetworkStream stream = client.GetStream();
-                StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-                writer.WriteLine(JsonSerializer.Serialize(invitePacket));
-            }
-            catch { }
-        }
-
-        // --- [MOI] KẾT NỐI VÀ MỜI (TƯƠNG TỰ CONNECT NHƯNG GỬI INVITE) ---
-        private static async Task ConnectAndInvite(string ip, int port)
-        {
-            try
-            {
-                TcpClient client = new TcpClient();
-                await client.ConnectAsync(ip, port);
-                AddNeighbor(client);
-
-                // Gửi Invite thay vì Hello
-                SendInvitePacket(client);
-
-                _ = Task.Run(() => SendHistoryToClient(client));
-                _ = Task.Run(() => HandleClient(client));
-
-                AddSystemLog($"Da gui loi moi den {ip}:{port}");
-            }
-            catch (Exception ex)
-            {
-                AddSystemLog($"[LOI INVITE] {ex.Message}");
-            }
-        }
-
-        // --- [MOI] TẠO VÀ JOIN TOKEN ---
-        private static void GenerateInviteToken()
-        {
-            try
-            {
-                string raw = $"{_myServerIp}:{_myServerPort}";
-                byte[] bytes = Encoding.UTF8.GetBytes(raw);
-                string token = Convert.ToBase64String(bytes);
-
-                AddSystemLog($"MA MOI CUA BAN: {token}");
-                AddSystemLog("Gui ma nay cho ban be de ho /join");
-            }
-            catch { }
-        }
-
-        private static void JoinByToken(string token)
-        {
-            try
-            {
-                byte[] bytes = Convert.FromBase64String(token);
-                string raw = Encoding.UTF8.GetString(bytes);
-                var parts = raw.Split(':');
-                if (parts.Length == 2)
-                {
-                    AddSystemLog($"Dang ket noi bang Token den {raw}...");
-                    _ = ConnectToPeer(parts[0], int.Parse(parts[1]));
-                }
-            }
-            catch
-            {
-                AddSystemLog("Ma Token khong hop le.");
-            }
-        }
-
-        // --- NETWORK HANDLERS ---
-        private static async Task AcceptClientsAsync(TcpListener listener)
-        {
-            while (true)
-            {
-                TcpClient client = await listener.AcceptTcpClientAsync();
-                AddNeighbor(client);
-                _ = Task.Run(() => SendHistoryToClient(client));
-                _ = Task.Run(() => HandleClient(client));
-            }
-        }
-
-        private static async Task ConnectToPeer(string ip, int port)
-        {
-            try
-            {
-                TcpClient client = new TcpClient();
-                await client.ConnectAsync(ip, port);
-                AddNeighbor(client);
-
-                // Gửi chào khi kết nối thành công
-                SendHelloPacket(client);
-
-                _ = Task.Run(() => SendHistoryToClient(client));
-                _ = Task.Run(() => HandleClient(client));
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[LOI] {ex.Message}");
-            }
-        }
-
-        private static async Task HandleClient(TcpClient client)
-        {
-            try
-            {
-                using (NetworkStream stream = client.GetStream())
-                using (StreamReader reader = new StreamReader(stream))
-                {
-                    while (client.Connected)
-                    {
-                        string jsonString = await reader.ReadLineAsync();
-                        if (jsonString == null) break;
-
-                        try
+                    _server = new TcpListener(IPAddress.Any, _currentUser.Port);
+                    _server.Start();
+                    _ = Task.Run(async () => {
+                        while (true)
                         {
-                            var packet = JsonSerializer.Deserialize<ChatPacket>(jsonString);
-
-                            // Xử lý gói tin Hello (Handshake)
-                            if (packet.Type == PacketType.Hello)
+                            try
                             {
-                                string sysMsg = $"[SYSTEM] Nguoi dung {packet.SenderName} ({packet.SenderInfo}) da ket noi!";
-                                AddSystemLog(sysMsg);
-                                continue;
+                                var client = await _server.AcceptTcpClientAsync();
+                                lock (_uiLock) _neighbors.Add(client);
+                                _ = Task.Run(() => HandleClient(client));
                             }
-                            // [MOI] Xử lý gói tin Invite
-                            else if (packet.Type == PacketType.Invite)
-                            {
-                                string sysMsg = $"[SYSTEM] *** BAN DA DUOC {packet.SenderName} MOI VAO NHOM! ***";
-                                AddSystemLog(sysMsg);
-                                continue;
-                            }
-
-                            if (_seenMessages.ContainsKey(packet.Id)) continue;
-
-                            ProcessIncomingPacket(packet);
-
-                            if (packet.IsHistory == false && packet.Type != PacketType.System)
-                            {
-                                BroadcastJson(jsonString, client);
-                            }
+                            catch { break; }
                         }
-                        catch { }
-                    }
+                    });
                 }
             }
             catch { }
-            finally { RemoveNeighbor(client); }
         }
 
-        private static void AddSystemLog(string content)
+        static async Task HandleClient(TcpClient client)
         {
-            var sysPacket = new ChatPacket
+            try
             {
-                Id = Guid.NewGuid().ToString(),
-                Type = PacketType.System,
-                Content = content,
-                Timestamp = DateTime.Now
-            };
-            lock (_lock) { _messageHistory.Add(sysPacket); }
-            RedrawConsole();
-        }
-
-        private static void ProcessIncomingPacket(ChatPacket packet)
-        {
-            _seenMessages.TryAdd(packet.Id, 0);
-
-            lock (_lock)
-            {
-                if (packet.Type == PacketType.Message)
+                using var reader = new StreamReader(client.GetStream());
+                while (client.Connected)
                 {
-                    if (!_messageHistory.Any(x => x.Id == packet.Id)) _messageHistory.Add(packet);
+                    string json = await reader.ReadLineAsync();
+                    if (json == null) break;
+                    var packet = JsonSerializer.Deserialize<ChatPacket>(json);
+                    ProcessPacket(packet);
                 }
-                else if (packet.Type == PacketType.Edit)
-                {
-                    var targetMsg = _messageHistory.FirstOrDefault(m => m.Id == packet.TargetId);
-                    if (targetMsg != null) targetMsg.Content = packet.Content + " (edited)";
-                }
-                else if (packet.Type == PacketType.Delete)
-                {
-                    var targetMsg = _messageHistory.FirstOrDefault(m => m.Id == packet.TargetId);
-                    if (targetMsg != null) _messageHistory.Remove(targetMsg);
-                }
-
-                _messageHistory = _messageHistory.OrderBy(x => x.Timestamp).ToList();
             }
-            RedrawConsole();
+            catch { }
+            finally { lock (_uiLock) _neighbors.Remove(client); }
         }
 
-        private static void HandleEditSpecificMessage(int userIndex, string newContent)
+        static void ProcessPacket(ChatPacket p)
         {
-            lock (_lock)
-            {
-                var myMessages = _messageHistory
-                    .Where(x => x.SenderInfo == $"{_myServerIp}:{_myServerPort}" && x.Type == PacketType.Message)
-                    .ToList();
+            JsonManager.HandlePacketStorage(p);
+            if (_currentSessionId == p.SessionId) RedrawChat(p.SessionId);
+        }
 
-                if (userIndex > 0 && userIndex <= myMessages.Count)
+        static void Broadcast(ChatPacket p)
+        {
+            string json = JsonSerializer.Serialize(p);
+            lock (_uiLock)
+            {
+                foreach (var c in _neighbors)
                 {
-                    var targetMsg = myMessages[userIndex - 1];
-                    var editPacket = new ChatPacket
+                    try
+                    {
+                        var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
+                        w.WriteLine(json);
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        // [MỚI] Hàm dùng chung cho Join và Invite
+        static async Task ConnectAndJoin(string ip, int port, string targetSessionId)
+        {
+            try
+            {
+                TcpClient c = new TcpClient();
+                await c.ConnectAsync(ip, port);
+                lock (_uiLock) _neighbors.Add(c);
+
+                // Gửi gói Invite/Join để báo cho bên kia biết mình muốn vào phòng nào
+                var packet = new ChatPacket
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    SessionId = targetSessionId,
+                    Type = PacketType.Invite, // Dùng Invite như một gói tin "Hello"
+                    SenderName = _currentUser.Username,
+                    SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
+                    Content = "Hello! Minh muon tham gia phong nay.",
+                    Timestamp = DateTime.Now
+                };
+
+                var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
+                await w.WriteLineAsync(JsonSerializer.Serialize(packet));
+                _ = Task.Run(() => HandleClient(c));
+            }
+            catch { Console.WriteLine($"[LOI KET NOI] Khong tim thay {ip}:{port}"); }
+        }
+
+        static void HandleEditCommand(int index, string newContent, string sessionId)
+        {
+            if (index > 0 && index <= _currentViewMap.Count)
+            {
+                var target = _currentViewMap[index - 1];
+                if (target.SenderName == _currentUser.Username && target.SenderInfo.Contains(_currentUser.Port.ToString()))
+                {
+                    var p = new ChatPacket
                     {
                         Id = Guid.NewGuid().ToString(),
+                        TargetId = target.Id,
+                        SessionId = sessionId,
                         Type = PacketType.Edit,
-                        TargetId = targetMsg.Id,
-                        SenderName = _username,
-                        SenderInfo = $"{_myServerIp}:{_myServerPort}",
+                        SenderName = _currentUser.Username,
+                        SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
                         Content = newContent,
                         Timestamp = DateTime.Now
                     };
-                    ProcessIncomingPacket(editPacket);
-                    BroadcastJson(JsonSerializer.Serialize(editPacket), null);
+                    ProcessPacket(p); Broadcast(p);
                 }
-                else AddSystemLog("Khong tim thay tin nhan nay de sua.");
+                else Console.WriteLine("[LOI] Chi duoc sua tin cua minh.");
             }
         }
 
-        private static void HandleDeleteSpecificMessage(int userIndex)
+        static void HandleDeleteCommand(int index, string sessionId)
         {
-            lock (_lock)
+            if (index > 0 && index <= _currentViewMap.Count)
             {
-                var myMessages = _messageHistory
-                    .Where(x => x.SenderInfo == $"{_myServerIp}:{_myServerPort}" && x.Type == PacketType.Message)
-                    .ToList();
-
-                if (userIndex > 0 && userIndex <= myMessages.Count)
+                var target = _currentViewMap[index - 1];
+                if (target.SenderName == _currentUser.Username && target.SenderInfo.Contains(_currentUser.Port.ToString()))
                 {
-                    var targetMsg = myMessages[userIndex - 1];
-                    var deletePacket = new ChatPacket
+                    var p = new ChatPacket
                     {
                         Id = Guid.NewGuid().ToString(),
+                        TargetId = target.Id,
+                        SessionId = sessionId,
                         Type = PacketType.Delete,
-                        TargetId = targetMsg.Id,
-                        SenderName = _username,
-                        SenderInfo = $"{_myServerIp}:{_myServerPort}",
+                        SenderName = _currentUser.Username,
+                        SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
                         Timestamp = DateTime.Now
                     };
-                    ProcessIncomingPacket(deletePacket);
-                    BroadcastJson(JsonSerializer.Serialize(deletePacket), null);
+                    ProcessPacket(p); Broadcast(p);
                 }
-                else AddSystemLog("Khong tim thay tin nhan nay de xoa.");
+                else Console.WriteLine("[LOI] Chi duoc xoa tin cua minh.");
             }
         }
 
-        // --- VẼ LẠI MÀN HÌNH ---
-        private static void RedrawConsole()
+        static void RedrawChat(string sessionId)
         {
-            lock (_lock)
+            lock (_uiLock)
             {
                 Console.Clear();
-
-                // 1. IN LẠI PHẦN THÔNG TIN (INFO) ĐẦU TRANG
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine("=== P2P CHAT PROFESSIONAL - " + _username + " ===");
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                // Hiển thị đầy đủ SessionID để user copy chia sẻ
+                Console.WriteLine($"=== ROOM ID: {sessionId} ===");
+                Console.WriteLine($"User: {_currentUser.Username} | IP: {GetLocalIP()} | Port: {_currentUser.Port}");
+                Console.WriteLine("Commands: /back, /invite <IP> <Port>, /edit, /delete");
                 Console.ResetColor();
-                Console.WriteLine($"[INFO] IP: {_myServerIp} | Port: {_myServerPort}");
-                Console.WriteLine("-----------------------------------------------------------------------");
-                Console.WriteLine("LENH KET NOI:");
-                Console.WriteLine(" - Tu ket noi: /connect <IP> <Port>");
-                Console.WriteLine(" - Moi nguoi:  /invite <IP> <Port>");
-                Console.WriteLine(" - Tao ma moi: /token");
-                Console.WriteLine(" - Vao nhom:   /join <Ma_Token>");
-                Console.WriteLine("LENH CHAT:");
-                Console.WriteLine(" - Sua tin:    /edit <STT_Vang> <noi dung>");
-                Console.WriteLine(" - Xoa tin:    /delete <STT_Vang>");
-                Console.WriteLine("-----------------------------------------------------------------------");
+                Console.WriteLine("---------------------------------------------------------");
 
-                // 2. IN LỊCH SỬ CHAT
-                int myMsgIndex = 0;
-                int globalCount = 0; // Bộ đếm tổng bên trái
+                var msgs = JsonManager.GetMessages(sessionId).OrderBy(x => x.Timestamp).ToList();
+                _currentViewMap.Clear();
 
-                foreach (var msg in _messageHistory)
+                int idx = 0;
+                foreach (var m in msgs)
                 {
-                    globalCount++;
-
-                    // In bộ đếm tổng (Màu xanh da trời)
-                    Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.Write($"[{globalCount:D2}] ");
-
-                    if (msg.Type == PacketType.System)
-                    {
-                        // Hiển thị thông báo hệ thống (kết nối...)
-                        Console.ForegroundColor = ConsoleColor.Magenta;
-                        Console.WriteLine($"[SYSTEM] {msg.Timestamp:HH:mm:ss}: {msg.Content}");
-                    }
-                    else if (msg.SenderInfo == $"{_myServerIp}:{_myServerPort}")
-                    {
-                        myMsgIndex++;
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.Write($"[#{myMsgIndex}] "); // STT riêng của user để dùng cho edit/delete
-
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine($"[{msg.Timestamp:HH:mm:ss}] You: {msg.Content}");
-                    }
-                    else
-                    {
-                        Console.ForegroundColor = ConsoleColor.White;
-                        Console.Write($"     [{msg.Timestamp:HH:mm:ss}] {msg.SenderName} ");
-                        Console.ForegroundColor = ConsoleColor.DarkGray;
-                        Console.Write($"({msg.SenderInfo})");
-                        Console.ForegroundColor = ConsoleColor.White;
-                        Console.WriteLine($": {msg.Content}");
-                    }
+                    _currentViewMap.Add(m);
+                    idx++;
+                    Console.ForegroundColor = ConsoleColor.Cyan; Console.Write($"[{idx}] ");
+                    if (m.Type == PacketType.Invite) { Console.ForegroundColor = ConsoleColor.Magenta; Console.WriteLine($"[SYSTEM] {m.SenderName}: {m.Content}"); }
+                    else if (m.SenderName == _currentUser.Username && m.SenderInfo.Contains(_currentUser.Port.ToString())) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"You: {m.Content}"); }
+                    else { Console.ForegroundColor = ConsoleColor.White; Console.WriteLine($"{m.SenderName}: {m.Content}"); }
                 }
                 Console.ResetColor();
-
-                Console.WriteLine("-----------------------------------------------------------------------");
+                Console.WriteLine("---------------------------------------------------------");
                 Console.Write("> ");
             }
         }
 
-        // --- UTILS ---
-        private static void SendHistoryToClient(TcpClient client)
+        static string GetLocalIP()
         {
-            List<ChatPacket> historyCopy;
-            lock (_lock) { historyCopy = new List<ChatPacket>(_messageHistory.Where(x => x.Type == PacketType.Message).ToList()); }
-            if (historyCopy.Count == 0) return;
-
-            try
-            {
-                NetworkStream stream = client.GetStream();
-                StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-                foreach (var msg in historyCopy)
-                {
-                    msg.IsHistory = true;
-                    writer.WriteLine(JsonSerializer.Serialize(msg));
-                    Thread.Sleep(10);
-                }
-            }
-            catch { }
-        }
-
-        private static void BroadcastJson(string json, TcpClient excludeClient)
-        {
-            List<TcpClient> deadClients = new List<TcpClient>();
-            lock (_lock)
-            {
-                foreach (var neighbor in _neighbors)
-                {
-                    if (neighbor == excludeClient) continue;
-                    try
-                    {
-                        if (neighbor.Connected)
-                        {
-                            NetworkStream stream = neighbor.GetStream();
-                            StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-                            writer.WriteLine(json);
-                        }
-                        else deadClients.Add(neighbor);
-                    }
-                    catch { deadClients.Add(neighbor); }
-                }
-                foreach (var c in deadClients) _neighbors.Remove(c);
-            }
-        }
-
-        private static void AddNeighbor(TcpClient client) { lock (_lock) _neighbors.Add(client); }
-        private static void RemoveNeighbor(TcpClient client) { lock (_lock) { if (_neighbors.Contains(client)) _neighbors.Remove(client); } }
-
-        private static void ShowNeighbors() { lock (_lock) AddSystemLog($"Dang ket noi voi {_neighbors.Count} nut."); }
-
-        private static string GetLocalIPAddress()
-        {
-            try
-            {
-                var host = Dns.GetHostEntry(Dns.GetHostName());
-                foreach (var ip in host.AddressList)
-                    if (ip.AddressFamily == AddressFamily.InterNetwork && !ip.ToString().StartsWith("127.")) return ip.ToString();
-                return "127.0.0.1";
-            }
-            catch { return "127.0.0.1"; }
+            var host = Dns.GetHostEntry(Dns.GetHostName());
+            foreach (var ip in host.AddressList)
+                if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString();
+            return "127.0.0.1";
         }
     }
 }
