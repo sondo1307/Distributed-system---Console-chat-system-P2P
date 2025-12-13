@@ -145,6 +145,7 @@ namespace P2PFinalJson
                 if (existing != null)
                 {
                     existing.LastActive = DateTime.Now;
+                    // Dòng này quan trọng: Không cho phép chữ "Joining..." ghi đè lên tên thật nếu đã có
                     if (!string.IsNullOrEmpty(name) && name != "Joining...") existing.Name = name;
                 }
                 else list.Add(new ChatSession { SessionId = sessionId, Name = name ?? "Unknown", LastActive = DateTime.Now });
@@ -576,8 +577,38 @@ namespace P2PFinalJson
                     if (json == null) break;
                     var packet = JsonSerializer.Deserialize<ChatPacket>(json);
 
-                    // [MỚI] Nếu là Ping thì bỏ qua, không xử lý gì cả (chỉ để giữ connect check online)
                     if (packet.Type == PacketType.Ping) continue;
+
+                    // [ĐOẠN CODE MỚI THÊM VÀO] ----------------------------------------
+                    // Nếu nhận được Invite (người khác Join vào), hãy gửi lại tên phòng cho họ biết
+                    if (packet.Type == PacketType.Invite)
+                    {
+                        string realName = JsonManager.GetSessionName(packet.SessionId);
+                        // Chỉ gửi nếu mình đang có tên xịn (khác Joining...)
+                        if (!string.IsNullOrEmpty(realName) && realName != "Joining...")
+                        {
+                            var replyPacket = new ChatPacket
+                            {
+                                Id = Guid.NewGuid().ToString(),
+                                SessionId = packet.SessionId,
+                                GroupName = realName, // <--- Gửi tên phòng chuẩn về cho người mới
+                                Type = PacketType.System,
+                                SenderName = _currentUser.Username,
+                                SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
+                                Content = $"Welcome to {realName}!", // Tin nhắn chào mừng
+                                Timestamp = DateTime.Now
+                            };
+
+                            // Gửi phản hồi ngay lập tức
+                            try
+                            {
+                                var w = new StreamWriter(client.GetStream()) { AutoFlush = true };
+                                await w.WriteLineAsync(JsonSerializer.Serialize(replyPacket));
+                            }
+                            catch { }
+                        }
+                    }
+                    // ------------------------------------------------------------------
 
                     ProcessPacket(packet);
                 }
