@@ -33,6 +33,10 @@ namespace P2PFinalJson
         public string Id { get; set; }
         public string TargetId { get; set; }
         public string SessionId { get; set; }
+
+        // [MỚI] Thêm trường này để đồng bộ tên nhóm
+        public string GroupName { get; set; }
+
         public PacketType Type { get; set; }
         public string SenderName { get; set; }
         public string SenderInfo { get; set; }
@@ -102,11 +106,12 @@ namespace P2PFinalJson
                 if (existing != null)
                 {
                     existing.LastActive = DateTime.Now;
-                    if (!string.IsNullOrEmpty(name)) existing.Name = name;
+                    // Chỉ cập nhật tên nếu tên mới hợp lệ và không phải mặc định
+                    if (!string.IsNullOrEmpty(name) && name != "Joining...") existing.Name = name;
                 }
                 else
                 {
-                    list.Add(new ChatSession { SessionId = sessionId, Name = name, LastActive = DateTime.Now });
+                    list.Add(new ChatSession { SessionId = sessionId, Name = name ?? "Unknown Chat", LastActive = DateTime.Now });
                 }
                 File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
             }
@@ -127,9 +132,15 @@ namespace P2PFinalJson
         {
             lock (_fileLock)
             {
-                if (p.SessionId != null)
-                    UpsertSession(p.SessionId, p.Type == PacketType.Invite ? $"Chat with {p.SenderName}" : null);
+                // [MỚI] Đồng bộ tên nhóm: Nếu gói tin có GroupName (từ Invite), cập nhật tên session
+                string sessionName = null;
+                if (!string.IsNullOrEmpty(p.GroupName)) sessionName = p.GroupName;
+                else if (p.Type == PacketType.Invite) sessionName = $"Chat with {p.SenderName}";
 
+                if (p.SessionId != null)
+                    UpsertSession(p.SessionId, sessionName);
+
+                // Lưu tin nhắn
                 string path = Path.Combine(DataFolder, $"msg_{p.SessionId}.json");
                 List<ChatPacket> msgs = File.Exists(path)
                     ? (JsonSerializer.Deserialize<List<ChatPacket>>(File.ReadAllText(path)) ?? new List<ChatPacket>())
@@ -152,6 +163,13 @@ namespace P2PFinalJson
 
                 File.WriteAllText(path, JsonSerializer.Serialize(msgs, new JsonSerializerOptions { WriteIndented = true }));
             }
+        }
+
+        // Helper để lấy tên session hiện tại (dùng khi gửi Invite)
+        public static string GetSessionName(string sessionId)
+        {
+            var s = LoadSessions().FirstOrDefault(x => x.SessionId == sessionId);
+            return s?.Name;
         }
     }
 
@@ -226,21 +244,23 @@ namespace P2PFinalJson
             }
         }
 
-        // --- SCREEN 2: DASHBOARD ---
+        // --- SCREEN 2: DASHBOARD (CÓ IP/PORT & REFRESH) ---
         static string Screen_Dashboard()
         {
             _currentSessionId = null;
             while (true)
             {
                 Console.Clear();
-                Console.ForegroundColor = ConsoleColor.Green;
+
+                // [MỚI] Hiển thị thông tin kết nối ngay đầu Dashboard
+                Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.WriteLine($"=== DASHBOARD: {_currentUser.Username} ===");
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[INFO] IP: {GetLocalIP()} | PORT: {_currentUser.Port}");
                 Console.ResetColor();
-                Console.WriteLine("LENH:");
-                Console.WriteLine(" - Tao moi:    N <Ten doan chat>");
-                Console.WriteLine(" - Xoa data:   RESET");
-                Console.WriteLine(" - Join Room:  J (Nhap IP, Port, RoomID)");
-                Console.WriteLine("----------------------------------");
+
+                Console.WriteLine("LENH: [N <Ten>] Tao moi | [J] Join ID | [RESET] Xoa data | [Ctrl+R] Refresh");
+                Console.WriteLine("-------------------------------------------------------------");
 
                 var sessions = JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList();
                 for (int i = 0; i < sessions.Count; i++)
@@ -248,13 +268,16 @@ namespace P2PFinalJson
                     Console.WriteLine($"[{i + 1}] {sessions[i].Name} (ID: {sessions[i].SessionId.Substring(0, 4)}...)");
                 }
 
-                Console.WriteLine("----------------------------------");
-                Console.Write("Nhap lua chon: ");
-                string input = Console.ReadLine()?.Trim();
+                Console.WriteLine("-------------------------------------------------------------");
+                Console.Write("> ");
 
+                // [MỚI] Dùng hàm nhập liệu tùy chỉnh để bắt phím Ctrl+R
+                string input = ReadInputWithHotkeys();
+
+                if (input == "CMD_REFRESH") continue; // Refresh vòng lặp để vẽ lại
                 if (string.IsNullOrEmpty(input)) continue;
 
-                // Tạo mới
+                // Logic cũ...
                 if (input.StartsWith("N ", StringComparison.OrdinalIgnoreCase))
                 {
                     string chatName = input.Substring(2).Trim();
@@ -263,7 +286,6 @@ namespace P2PFinalJson
                     return newId;
                 }
 
-                // Reset
                 if (input.Equals("RESET", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -276,31 +298,24 @@ namespace P2PFinalJson
                     Console.ResetColor();
                 }
 
-                // [THAY ĐỔI] Join bằng ID + IP
                 else if (input.Equals("J", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.WriteLine("De vao phong, ban can IP va Port cua chu phong.");
-                    Console.Write("Nhap theo cu phap: <IP> <Port> <RoomID>: ");
-                    string joinCmd = Console.ReadLine(); // VD: 192.168.1.5 9000 abc-123
+                    Console.Write("Nhap: <IP> <Port> <RoomID>: ");
+                    string joinCmd = Console.ReadLine();
 
                     var parts = joinCmd.Split(' ');
                     if (parts.Length == 3 && int.TryParse(parts[1], out int p))
                     {
                         string targetId = parts[2];
-                        // Lưu session trước để vào được phòng
                         JsonManager.UpsertSession(targetId, "Joining...");
-                        // Thực hiện kết nối ngầm
                         _ = ConnectAndJoin(parts[0], p, targetId);
 
                         Console.WriteLine("Dang ket noi...");
                         Thread.Sleep(1000);
                         return targetId;
                     }
-                    else Console.WriteLine("[LOI] Sai cu phap! Can: IP Port RoomID");
-                    Thread.Sleep(2000);
                 }
 
-                // Chọn cũ
                 else if (int.TryParse(input, out int idx) && idx > 0 && idx <= sessions.Count)
                 {
                     return sessions[idx - 1].SessionId;
@@ -321,20 +336,15 @@ namespace P2PFinalJson
 
                 if (input == "/back") return;
 
-                // [THAY ĐỔI] Lệnh Join trong phòng chat
                 if (input.StartsWith("/join "))
                 {
                     var p = input.Split(' ');
-                    if (p.Length == 4) // /join IP Port RoomID
+                    if (p.Length == 4)
                     {
                         await ConnectAndJoin(p[1], int.Parse(p[2]), p[3]);
-                        // Nếu ID khác phòng hiện tại, user cần gõ /back để ra dashboard chọn lại, hoặc tự động switch?
-                        // Ở đây ta giữ nguyên phòng hiện tại, chỉ thiết lập kết nối.
-                        Console.WriteLine("[SYSTEM] Da ket noi them.");
+                        Console.WriteLine("[SYSTEM] Da gui tin nhan ket noi.");
                     }
-                    else Console.WriteLine("Sai cu phap. Dung: /join <IP> <Port> <RoomID>");
                 }
-                // Các lệnh cũ
                 else if (input.StartsWith("/invite "))
                 {
                     var p = input.Split(' ');
@@ -370,7 +380,7 @@ namespace P2PFinalJson
             }
         }
 
-        // --- NETWORK & LOGIC ---
+        // --- NETWORK HANDLERS ---
         static void StartServer()
         {
             try
@@ -416,6 +426,7 @@ namespace P2PFinalJson
         static void ProcessPacket(ChatPacket p)
         {
             JsonManager.HandlePacketStorage(p);
+            // Nếu đang mở đúng phòng chat thì vẽ lại
             if (_currentSessionId == p.SessionId) RedrawChat(p.SessionId);
         }
 
@@ -436,7 +447,6 @@ namespace P2PFinalJson
             }
         }
 
-        // [MỚI] Hàm dùng chung cho Join và Invite
         static async Task ConnectAndJoin(string ip, int port, string targetSessionId)
         {
             try
@@ -445,15 +455,18 @@ namespace P2PFinalJson
                 await c.ConnectAsync(ip, port);
                 lock (_uiLock) _neighbors.Add(c);
 
-                // Gửi gói Invite/Join để báo cho bên kia biết mình muốn vào phòng nào
+                // [MỚI] Lấy tên nhóm hiện tại để gửi kèm
+                string myGroupName = JsonManager.GetSessionName(targetSessionId);
+
                 var packet = new ChatPacket
                 {
                     Id = Guid.NewGuid().ToString(),
                     SessionId = targetSessionId,
-                    Type = PacketType.Invite, // Dùng Invite như một gói tin "Hello"
+                    GroupName = myGroupName, // Gửi kèm tên nhóm
+                    Type = PacketType.Invite,
                     SenderName = _currentUser.Username,
                     SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
-                    Content = "Hello! Minh muon tham gia phong nay.",
+                    Content = "Hello! Minh muon tham gia.",
                     Timestamp = DateTime.Now
                 };
 
@@ -464,6 +477,7 @@ namespace P2PFinalJson
             catch { Console.WriteLine($"[LOI KET NOI] Khong tim thay {ip}:{port}"); }
         }
 
+        // --- EDIT / DELETE LOGIC ---
         static void HandleEditCommand(int index, string newContent, string sessionId)
         {
             if (index > 0 && index <= _currentViewMap.Count)
@@ -511,17 +525,19 @@ namespace P2PFinalJson
             }
         }
 
+        // --- UI UTILS ---
         static void RedrawChat(string sessionId)
         {
             lock (_uiLock)
             {
                 Console.Clear();
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                // Hiển thị đầy đủ SessionID để user copy chia sẻ
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                // [MỚI] Hiển thị rõ IP/Port trong phòng chat
                 Console.WriteLine($"=== ROOM ID: {sessionId} ===");
-                Console.WriteLine($"User: {_currentUser.Username} | IP: {GetLocalIP()} | Port: {_currentUser.Port}");
-                Console.WriteLine("Commands: /back, /invite <IP> <Port>, /edit, /delete");
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[MY INFO] IP: {GetLocalIP()} | Port: {_currentUser.Port}");
                 Console.ResetColor();
+                Console.WriteLine("Commands: /back, /invite <IP> <Port>, /edit, /delete");
                 Console.WriteLine("---------------------------------------------------------");
 
                 var msgs = JsonManager.GetMessages(sessionId).OrderBy(x => x.Timestamp).ToList();
@@ -540,6 +556,45 @@ namespace P2PFinalJson
                 Console.ResetColor();
                 Console.WriteLine("---------------------------------------------------------");
                 Console.Write("> ");
+            }
+        }
+
+        // [MỚI] Hàm nhập liệu xử lý phím tắt (Ctrl+R)
+        static string ReadInputWithHotkeys()
+        {
+            StringBuilder buffer = new StringBuilder();
+            while (true)
+            {
+                var keyInfo = Console.ReadKey(true); // Đọc phím không hiện ra màn hình
+
+                // Xử lý Ctrl + R
+                if (keyInfo.Modifiers == ConsoleModifiers.Control && keyInfo.Key == ConsoleKey.R)
+                {
+                    return "CMD_REFRESH";
+                }
+
+                // Xử lý Enter
+                if (keyInfo.Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine();
+                    return buffer.ToString();
+                }
+
+                // Xử lý Backspace
+                if (keyInfo.Key == ConsoleKey.Backspace)
+                {
+                    if (buffer.Length > 0)
+                    {
+                        buffer.Length--;
+                        Console.Write("\b \b"); // Xóa ký tự trên màn hình
+                    }
+                }
+                // Xử lý ký tự thường
+                else if (!char.IsControl(keyInfo.KeyChar))
+                {
+                    buffer.Append(keyInfo.KeyChar);
+                    Console.Write(keyInfo.KeyChar);
+                }
             }
         }
 
