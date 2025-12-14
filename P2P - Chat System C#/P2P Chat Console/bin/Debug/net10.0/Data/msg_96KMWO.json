@@ -1,0 +1,35 @@
+[
+  {
+    "Id": "0572aaa5-bc7d-4e7a-8c4e-68117bb7dbd9",
+    "TargetId": null,
+    "SessionId": "96KMWO",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "dasdas",
+    "Timestamp": "2025-12-14T23:54:01.3712232+07:00"
+  },
+  {
+    "Id": "117236d6-30ca-439c-aba2-71666688c810",
+    "TargetId": null,
+    "SessionId": "96KMWO",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "dsada",
+    "Timestamp": "2025-12-14T23:54:02.2608151+07:00"
+  },
+  {
+    "Id": "cf74a232-a349-4449-b2fd-9abbb572b92f",
+    "TargetId": null,
+    "SessionId": "96KMWO",
+    "GroupName": "Unknown",
+    "Type": 1,
+    "SenderName": "nam",
+    "SenderInfo": "192.168.50.202:123",
+    "Content": "Welcome to Unknown!",
+    "Timestamp": "2025-12-14T23:54:17.3418929+07:00"
+  }
+]

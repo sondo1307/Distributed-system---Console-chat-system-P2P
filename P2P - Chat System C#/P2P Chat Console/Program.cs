@@ -77,8 +77,48 @@ namespace P2PFinalJson
             {
                 var list = LoadSessions();
                 var existing = list.FirstOrDefault(s => s.SessionId == sessionId);
-                if (existing != null) { existing.LastActive = DateTime.Now; if (!string.IsNullOrEmpty(name) && name != "Joining...") existing.Name = name; }
-                else list.Add(new ChatSession { SessionId = sessionId, Name = name ?? "Unknown", LastActive = DateTime.Now });
+
+                if (existing != null)
+                {
+                    existing.LastActive = DateTime.Now;
+
+                    // [FIX LỖI TỰ ĐỔI TÊN THÀNH UNKNOWN]
+                    // Nguyên tắc: Tên "Xịn" (User đặt) > Tên "Mặc định" (Unknown/Chat with...)
+
+                    // 1. Nếu tên mới rỗng hoặc là "Joining..." -> Bỏ qua ngay
+                    if (string.IsNullOrEmpty(name) || name == "Joining...")
+                    {
+                        // Giữ nguyên file, cập nhật mỗi LastActive
+                        File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
+                        return;
+                    }
+
+                    // 2. Kiểm tra xem tên cũ và tên mới là loại nào
+                    bool isOldNameDefault = existing.Name == "Unknown" || existing.Name == "New Chat" || existing.Name.StartsWith("Chat with");
+                    bool isNewNameDefault = name == "Unknown" || name == "New Chat" || name.StartsWith("Chat with");
+
+                    if (isOldNameDefault)
+                    {
+                        // Nếu tên cũ là mặc định (dởm), thì tên mới là gì cũng cập nhật (để nâng cấp)
+                        existing.Name = name;
+                    }
+                    else
+                    {
+                        // Nếu tên cũ là tên XỊN (User đã đặt tên phòng rồi)
+                        // Chỉ cập nhật nếu tên mới cũng là tên XỊN (để sửa tên phòng)
+                        // Tuyệt đối không để tên mặc định (NewNameDefault) ghi đè lên tên Xịn
+                        if (!isNewNameDefault)
+                        {
+                            existing.Name = name;
+                        }
+                    }
+                }
+                else
+                {
+                    // Nếu chưa có thì tạo mới bình thường
+                    list.Add(new ChatSession { SessionId = sessionId, Name = name ?? "Unknown", LastActive = DateTime.Now });
+                }
+
                 File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
             }
         }

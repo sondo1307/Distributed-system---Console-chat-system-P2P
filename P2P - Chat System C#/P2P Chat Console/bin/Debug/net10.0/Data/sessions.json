@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "SessionId": "L5O5X9",
+    "Name": "chat test 123",
+    "LastActive": "2025-12-14T23:52:53.3480176+07:00"
+  },
+  {
+    "SessionId": "N38UK4",
+    "Name": "Unknown",
+    "LastActive": "2025-12-14T23:53:09.9046476+07:00"
+  },
+  {
+    "SessionId": "96KMWO",
+    "Name": "Unknown",
+    "LastActive": "2025-12-14T23:54:18.3230114+07:00"
+  },
+  {
+    "SessionId": "W2IZR9",
+    "Name": "Unknown",
+    "LastActive": "2025-12-14T23:56:04.9482404+07:00"
+  }
+]

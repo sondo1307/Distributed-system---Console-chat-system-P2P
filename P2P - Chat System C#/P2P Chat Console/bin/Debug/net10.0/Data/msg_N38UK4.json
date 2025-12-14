@@ -1,0 +1,35 @@
+[
+  {
+    "Id": "ec27d68e-b792-4654-bea6-465f823194b8",
+    "TargetId": null,
+    "SessionId": "N38UK4",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "cc",
+    "Timestamp": "2025-12-14T23:53:04.6233376+07:00"
+  },
+  {
+    "Id": "04177402-1845-4e5d-803d-ffd20bcc60b0",
+    "TargetId": null,
+    "SessionId": "N38UK4",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "chao",
+    "Timestamp": "2025-12-14T23:53:05.6576936+07:00"
+  },
+  {
+    "Id": "57a3a3f0-539b-4eaf-a9ef-89da95b04922",
+    "TargetId": null,
+    "SessionId": "N38UK4",
+    "GroupName": "Unknown",
+    "Type": 1,
+    "SenderName": "nam",
+    "SenderInfo": "192.168.50.202:123",
+    "Content": "Welcome to Unknown!",
+    "Timestamp": "2025-12-14T23:53:08.923833+07:00"
+  }
+]
