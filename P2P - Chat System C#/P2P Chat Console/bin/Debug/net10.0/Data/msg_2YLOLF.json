@@ -1,0 +1,46 @@
+[
+  {
+    "Id": "42355742-9da9-4b04-8131-a19b7e9bb694",
+    "TargetId": null,
+    "SessionId": "2YLOLF",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "xidsa",
+    "Timestamp": "2025-12-14T23:59:57.6729945+07:00"
+  },
+  {
+    "Id": "1d83516e-7e7a-42a4-955c-d1cc3bce7595",
+    "TargetId": null,
+    "SessionId": "2YLOLF",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "xin chao",
+    "Timestamp": "2025-12-15T00:00:00.2907824+07:00"
+  },
+  {
+    "Id": "13f10a4b-276e-4b1e-909e-1a14612c9f6e",
+    "TargetId": null,
+    "SessionId": "2YLOLF",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.202:123",
+    "Content": "cc",
+    "Timestamp": "2025-12-15T00:00:13.0745609+07:00"
+  },
+  {
+    "Id": "392aa325-d790-4ca0-a231-3593a5e4fa62",
+    "TargetId": null,
+    "SessionId": "2YLOLF",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.202:123",
+    "Content": "123",
+    "Timestamp": "2025-12-15T00:00:18.8950169+07:00"
+  }
+]
