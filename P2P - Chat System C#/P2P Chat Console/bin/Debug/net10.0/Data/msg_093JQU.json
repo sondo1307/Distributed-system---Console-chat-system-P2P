@@ -1,0 +1,57 @@
+[
+  {
+    "Id": "3f1f587b-ac4c-49a8-b96d-855af11351b4",
+    "TargetId": null,
+    "SessionId": "093JQU",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "xin chao",
+    "Timestamp": "2025-12-15T00:04:59.6397734+07:00"
+  },
+  {
+    "Id": "27e98bca-c889-45a7-b719-cf2a7d390fbf",
+    "TargetId": null,
+    "SessionId": "093JQU",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "12421dsada",
+    "Timestamp": "2025-12-15T00:05:00.6986776+07:00"
+  },
+  {
+    "Id": "8e27b7c6-29c5-42e4-8982-1cb69f78a0cb",
+    "TargetId": null,
+    "SessionId": "093JQU",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "\u0111asa",
+    "Timestamp": "2025-12-15T00:05:01.7054525+07:00"
+  },
+  {
+    "Id": "e124526a-edca-424b-9327-81f43e2f0313",
+    "TargetId": null,
+    "SessionId": "093JQU",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "xin chao",
+    "Timestamp": "2025-12-15T00:05:33.8043246+07:00"
+  },
+  {
+    "Id": "7d2dc4e0-a09a-4a8f-b1b5-bc9059a247cc",
+    "TargetId": null,
+    "SessionId": "093JQU",
+    "GroupName": null,
+    "Type": 2,
+    "SenderName": "Son",
+    "SenderInfo": "192.168.50.137:123",
+    "Content": "gioi oi",
+    "Timestamp": "2025-12-15T00:05:40.2221136+07:00"
+  }
+]

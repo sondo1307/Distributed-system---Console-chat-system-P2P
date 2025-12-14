@@ -328,7 +328,7 @@ namespace P2PFinalJson
         static string GetLocalIP() { var host = Dns.GetHostEntry(Dns.GetHostName()); foreach (var ip in host.AddressList) if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString(); return "127.0.0.1"; }
         private static string GenerateShortId() { const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; Random random = new Random(); return new string(Enumerable.Repeat(chars, 6).Select(s => s[random.Next(s.Length)]).ToArray()); }
 
-        // [HAM CŨ GIỮ NGUYÊN - ĐÃ ĐƯỢC CHUYỂN SANG TRẢ VỀ BOOL]
+        // [ĐÃ SỬA] Thêm logic gửi kèm lịch sử chat khi mời bạn
         static async Task<bool> ConnectAndJoin(string ip, int port, string targetSessionId)
         {
             try
@@ -342,6 +342,8 @@ namespace P2PFinalJson
 
                 lock (_uiLock) _neighbors.Add(c);
                 string myGroupName = JsonManager.GetSessionName(targetSessionId);
+
+                // 1. Gửi gói tin Invite đầu tiên
                 var packet = new ChatPacket
                 {
                     Id = Guid.NewGuid().ToString(),
@@ -355,6 +357,25 @@ namespace P2PFinalJson
                 };
                 var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
                 await w.WriteLineAsync(JsonSerializer.Serialize(packet));
+
+                // [ĐOẠN CODE MỚI] 2. Bơm lịch sử chat sang cho người được mời
+                // Vì họ mới vào, họ chưa có gì cả, mình phải gửi cho họ
+                var history = JsonManager.GetMessages(targetSessionId);
+                if (history.Count > 0)
+                {
+                    foreach (var oldMsg in history)
+                    {
+                        // Chỉ gửi tin nhắn văn bản
+                        if (oldMsg.Type == PacketType.Message)
+                        {
+                            // Delay cực ngắn để tránh dính gói tin (TCP Stream issue)
+                            await Task.Delay(10);
+                            await w.WriteLineAsync(JsonSerializer.Serialize(oldMsg));
+                        }
+                    }
+                }
+                // -------------------------------------------------------------
+
                 _ = Task.Run(() => HandleClient(c));
                 return true;
             }
