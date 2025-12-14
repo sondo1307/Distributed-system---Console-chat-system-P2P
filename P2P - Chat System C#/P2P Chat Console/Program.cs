@@ -10,7 +10,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Runtime.InteropServices;
 
 namespace P2PFinalJson
 {
@@ -43,13 +42,13 @@ namespace P2PFinalJson
             SetWindowLong(handle, GWL_STYLE, style);
 
             // 2. Đặt kích thước Pixel cố định (1500x750)
-            // Tọa độ xuất hiện (200, 100) để không bị che khuất
             MoveWindow(handle, 200, 100, 1500, 750, true);
         }
     }
 
     // --- MODELS ---
-    public enum PacketType { Hello, System, Message, Edit, Delete, Invite, Ping }
+    // [CẬP NHẬT] Thêm FriendReq và FriendRes
+    public enum PacketType { Hello, System, Message, Edit, Delete, Invite, Ping, FriendReq, FriendRes }
 
     public class UserConfig
     {
@@ -198,8 +197,8 @@ namespace P2PFinalJson
         {
             lock (_fileLock)
             {
-                // Không lưu gói tin Ping vào lịch sử chat
-                if (p.Type == PacketType.Ping) return;
+                // Không lưu gói tin Ping hoặc FriendReq/Res vào lịch sử chat
+                if (p.Type == PacketType.Ping || p.Type == PacketType.FriendReq || p.Type == PacketType.FriendRes) return;
 
                 string sessionName = null;
                 if (!string.IsNullOrEmpty(p.GroupName)) sessionName = p.GroupName;
@@ -245,6 +244,9 @@ namespace P2PFinalJson
         static List<ChatPacket> _currentViewMap = new List<ChatPacket>();
 
         static List<Friend> _myFriends = new List<Friend>();
+
+        // [MỚI] Biến lưu trữ yêu cầu kết bạn đang chờ xử lý
+        static ChatPacket _pendingFriendReq = null;
 
         static async Task Main(string[] args)
         {
@@ -375,9 +377,20 @@ namespace P2PFinalJson
                 Console.WriteLine("NEUTRAL COMMAND:");
                 Console.WriteLine(" [N <Name of the group chat>] New group chat | [J] Join                    | [RESET] Reset all data | [Ctrl+R] Refresh");
                 Console.WriteLine("PHONEBOOK COMMAND:");
-                Console.WriteLine(" [F] Add friend/ contact                     | [L] List friends/ contacts");
-                Console.WriteLine("-------------------------------------------------------------");
+                Console.WriteLine(" [F] Add friend (Invite)                     | [L] List friends/ contacts");
 
+                // [MỚI] Hiển thị thông báo nếu có lời mời kết bạn
+                if (_pendingFriendReq != null)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("-------------------------------------------------------------");
+                    Console.WriteLine($"[ALERT] {_pendingFriendReq.SenderInfo} ({_pendingFriendReq.SenderName}) want to add friend.");
+                    Console.WriteLine("        Type 'Y' to Accept, 'N' to Ignore.");
+                    Console.WriteLine("-------------------------------------------------------------");
+                    Console.ResetColor();
+                }
+
+                Console.WriteLine("-------------------------------------------------------------");
                 var sessions = JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList();
                 for (int i = 0; i < sessions.Count; i++)
                 {
@@ -392,24 +405,50 @@ namespace P2PFinalJson
                 if (input == "CMD_REFRESH") continue;
                 if (string.IsNullOrEmpty(input)) continue;
 
-                // [MỚI] THÊM BẠN
+                // [MỚI] XỬ LÝ TRẢ LỜI KẾT BẠN (Y/N)
+                if (_pendingFriendReq != null)
+                {
+                    if (input.Equals("Y", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 1. Lưu người kia vào danh bạ của mình
+                        var parts = _pendingFriendReq.SenderInfo.Split(':');
+                        if (parts.Length == 2)
+                        {
+                            string ip = parts[0];
+                            int port = int.Parse(parts[1]);
+                            string name = _pendingFriendReq.SenderName;
+
+                            JsonManager.AddFriend(name, ip, port);
+                            Console.WriteLine($"[SUCCESS] Added {name} to contacts.");
+
+                            // 2. Gửi phản hồi đồng ý cho họ
+                            _ = SendFriendResponse(ip, port, true);
+                        }
+                        _pendingFriendReq = null; // Xóa yêu cầu đã xử lý
+                        Thread.Sleep(1500);
+                        continue;
+                    }
+                    else if (input.Equals("N", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine("[INFO] Ignored friend request.");
+                        _pendingFriendReq = null;
+                        Thread.Sleep(1000);
+                        continue;
+                    }
+                }
+
+                // [MỚI] GỬI LỜI MỜI KẾT BẠN (Thay vì lưu luôn)
                 if (input.Equals("F", StringComparison.OrdinalIgnoreCase))
                 {
+                    Console.WriteLine("--- Send Friend Request ---");
+                    Console.Write("Partner IP: "); string ip = Console.ReadLine();
+                    Console.Write("Partner Port: "); int.TryParse(Console.ReadLine(), out int p);
 
-                    Console.WriteLine("--- Add friend ---");
-                    Console.Write("IP: "); string ip = Console.ReadLine();
-                    Console.Write("Port: "); int.TryParse(Console.ReadLine(), out int p);
-                    Console.Write("Nickname: "); string n = Console.ReadLine();
+                    Console.WriteLine("Sending request...");
+                    _ = SendFriendRequest(ip, p);
 
-                    if (JsonManager.AddFriend(n, ip, p))
-                    {
-                        Console.WriteLine("Add to contacts success!");
-                    }
-                    else
-                    {
-                        Console.WriteLine("[ERROR] Name already exists! Please choose another name.");
-                    }
-                    Thread.Sleep(1000);
+                    Console.WriteLine("Request sent! Waiting for approval...");
+                    Thread.Sleep(2000);
                 }
                 // [MỚI] DANH SÁCH BẠN
                 else if (input.Equals("L", StringComparison.OrdinalIgnoreCase))
@@ -579,27 +618,56 @@ namespace P2PFinalJson
 
                     if (packet.Type == PacketType.Ping) continue;
 
-                    // [ĐOẠN CODE MỚI THÊM VÀO] ----------------------------------------
-                    // Nếu nhận được Invite (người khác Join vào), hãy gửi lại tên phòng cho họ biết
+                    // [MỚI] Xử lý yêu cầu kết bạn đến
+                    if (packet.Type == PacketType.FriendReq)
+                    {
+                        _pendingFriendReq = packet;
+                        // Nếu đang ở Dashboard, in đè thông báo ngay lập tức để người dùng thấy
+                        if (_currentSessionId == null)
+                        {
+                            Console.WriteLine();
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"[ALERT] {packet.SenderInfo} ({packet.SenderName}) want to add friend. Y/N?");
+                            Console.ResetColor();
+                            Console.Write("> ");
+                        }
+                        continue;
+                    }
+
+                    // [MỚI] Xử lý phản hồi đồng ý kết bạn
+                    if (packet.Type == PacketType.FriendRes && packet.Content == "YES")
+                    {
+                        var parts = packet.SenderInfo.Split(':');
+                        if (parts.Length == 2)
+                        {
+                            // Lưu người kia vào danh bạ của mình
+                            JsonManager.AddFriend(packet.SenderName, parts[0], int.Parse(parts[1]));
+                            Console.WriteLine();
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine($"[SUCCESS] {packet.SenderName} accepted request! Saved to contacts.");
+                            Console.ResetColor();
+                            if (_currentSessionId == null) Console.Write("> ");
+                        }
+                        continue;
+                    }
+
+                    // Xử lý Invite (Gửi tên phòng)
                     if (packet.Type == PacketType.Invite)
                     {
                         string realName = JsonManager.GetSessionName(packet.SessionId);
-                        // Chỉ gửi nếu mình đang có tên xịn (khác Joining...)
                         if (!string.IsNullOrEmpty(realName) && realName != "Joining...")
                         {
                             var replyPacket = new ChatPacket
                             {
                                 Id = Guid.NewGuid().ToString(),
                                 SessionId = packet.SessionId,
-                                GroupName = realName, // <--- Gửi tên phòng chuẩn về cho người mới
+                                GroupName = realName,
                                 Type = PacketType.System,
                                 SenderName = _currentUser.Username,
                                 SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
-                                Content = $"Welcome to {realName}!", // Tin nhắn chào mừng
+                                Content = $"Welcome to {realName}!",
                                 Timestamp = DateTime.Now
                             };
-
-                            // Gửi phản hồi ngay lập tức
                             try
                             {
                                 var w = new StreamWriter(client.GetStream()) { AutoFlush = true };
@@ -608,13 +676,55 @@ namespace P2PFinalJson
                             catch { }
                         }
                     }
-                    // ------------------------------------------------------------------
 
                     ProcessPacket(packet);
                 }
             }
             catch { }
             finally { lock (_uiLock) _neighbors.Remove(client); }
+        }
+
+        // [MỚI] Hàm gửi yêu cầu kết bạn
+        static async Task SendFriendRequest(string ip, int port)
+        {
+            try
+            {
+                using TcpClient c = new TcpClient();
+                await c.ConnectAsync(ip, port);
+                var packet = new ChatPacket
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Type = PacketType.FriendReq,
+                    SenderName = _currentUser.Username,
+                    SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
+                    Timestamp = DateTime.Now
+                };
+                using var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
+                await w.WriteLineAsync(JsonSerializer.Serialize(packet));
+            }
+            catch { Console.WriteLine($"[ERROR] Cannot connect to {ip}:{port}"); }
+        }
+
+        // [MỚI] Hàm gửi phản hồi kết bạn
+        static async Task SendFriendResponse(string ip, int port, bool accepted)
+        {
+            try
+            {
+                using TcpClient c = new TcpClient();
+                await c.ConnectAsync(ip, port);
+                var packet = new ChatPacket
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Type = PacketType.FriendRes,
+                    SenderName = _currentUser.Username,
+                    SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
+                    Content = accepted ? "YES" : "NO",
+                    Timestamp = DateTime.Now
+                };
+                using var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
+                await w.WriteLineAsync(JsonSerializer.Serialize(packet));
+            }
+            catch { }
         }
 
         static void ProcessPacket(ChatPacket p)
