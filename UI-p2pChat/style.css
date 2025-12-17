@@ -88,7 +88,7 @@ body {
 }
 
 .me {
-  color: green;
+  color: blue;
 }
 
 .other {
@@ -236,11 +236,135 @@ body {
 .modal-content {
   background: #1e1e2f;
   color: white;
-  border-radius: 8px;
-  padding: 0;
-  width: 650px;
+  border-radius: 10px;
+  padding: 10px;
 }
+
+.modal-content.modal-split{
+  background: #1e1e2f;
+  color: white;
+  border-radius: 10px;
+  padding: 0px;
+  width: 500px;
+}
+
 
 .friendList{
   overflow-y: auto;
+}
+
+/* từng dòng chat */
+.message-row {
+  display: flex;
+  margin-bottom: 10px;
+}
+
+/* người khác → trái */
+.message-row.left {
+  justify-content: flex-start;
+}
+
+/* mình → phải */
+.message-row.right {
+  justify-content: flex-end;
+}
+
+/* bubble */
+.message-bubble {
+  max-width: 60%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #e4e6eb;
+  font-size: 14px;
+  word-wrap: break-word;
+}
+
+/* bubble của mình */
+.message-row.right .message-bubble {
+  background: #4646f7;
+  color: white;
+  border-bottom-right-radius: 0;
+}
+
+/* bubble của người khác */
+.message-row.left .message-bubble {
+  background: #e4e6eb;
+  color: black;
+  border-bottom-left-radius: 0;
+}
+
+/* tên người gửi */
+.sender-name {
+  font-size: 12px;
+  font-weight: bold;
+  margin-bottom: 3px;
+  color: #555;
+}
+.message-wrapper {
+  display: flex;
+  margin-bottom: 10px;
+}
+
+.message-wrapper.me {
+  justify-content: flex-end;
+}
+
+.message-wrapper.other {
+  justify-content: flex-start;
+}
+
+.message-bubble {
+  position: relative;
+}
+
+.message-actions {
+  position: absolute;
+  top: 4px;
+  left: -16px;     
+  display: none;
+}
+
+/* hover vào bubble thì hiện */
+.message-wrapper.me:hover .message-actions {
+  display: block;
+}
+
+.dots {
+  cursor: pointer;
+  font-size: 16px;
+  color: rgb(85, 82, 82);
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.dots:hover {
+  background: rgba(89, 87, 87, 0.2);
+}
+
+/* dropdown */
+.dropdown {
+  display: none;
+  position: absolute;
+  top: 20px;
+  right: 0;
+  background: white;
+  color: black;
+  border-radius: 6px;
+  min-width: 90px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+  z-index: 10;
+}
+
+.message-actions:hover .dropdown {
+  display: block;
+}
+
+.dropdown div {
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.dropdown div:hover {
+  background: #f0f0f0;
 }

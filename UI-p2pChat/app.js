@@ -20,9 +20,35 @@ function login() {
 }
 
 function newRoom() {
-    const id = Math.random().toString(36).substring(2, 8).toUpperCase();
-    sessions[id] = [];
+    document.getElementById("newRoomModel")
+        .classList.remove("hidden");
+}
+
+function confirmNewRoom() {
+    const id = document.getElementById("newRoomId").value.trim();
+    if (!id) {
+        alert("Enter room ID");
+        return;
+    }
+    if (!id) return;
+
+    const roomId = id.trim().toUpperCase();
+    if (sessions[roomId]) {
+        alert("Room already exists!");
+        return;
+    }
+
+    sessions[roomId] = [];
     renderSessions();
+    closeNewRoom();
+}
+
+
+function closeNewRoom() {
+    document.getElementById("newRoomModel")
+        .classList.add("hidden");
+    document.getElementById("newRoomId").value = "";
+
 }
 
 function renderSessions() {
@@ -66,17 +92,42 @@ function sendMessage() {
 }
 
 function renderMessages() {
-    messagesDiv.innerHTML = "";
+  messagesDiv.innerHTML = "";
 
-    sessions[currentRoom].forEach(m => {
-        const div = document.createElement("div");
-        div.className = "message " + (m.sender === currentUser ? "me" : "other");
-        div.textContent = `${m.sender}: ${m.content}`;
-        messagesDiv.appendChild(div);
-    });
+  sessions[currentRoom].forEach((m, index) => {
+    const wrapper = document.createElement("div");
+    wrapper.className =
+      "message-wrapper " +
+      (m.sender === currentUser ? "me" : "other");
 
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    wrapper.innerHTML = `
+      <div class="message-bubble">
+        <span class="message-text">${m.content}</span>
+
+        ${
+          m.sender === currentUser
+            ? `
+            <div class="message-actions">
+              <span class="dots">⋮</span>
+              <div class="dropdown">
+                <div onclick="editMessage(${index})">Edit</div>
+                <div onclick="deleteMessage(${index})">Delete</div>
+              </div>
+            </div>
+            `
+            : ""
+        }
+      </div>
+    `;
+
+    messagesDiv.appendChild(wrapper);
+  });
+
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
+
+
+
 function addFriend() {
     document.getElementById("addFriendModal")
         .classList.remove("hidden");
