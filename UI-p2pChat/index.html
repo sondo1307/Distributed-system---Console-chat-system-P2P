@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>P2P Chat</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="profile">
+      <input id="username" placeholder="Username">
+      <input id="port" placeholder="Port">
+      <button onclick="login()">Login</button>
+    </div>
+
+    <div class="sessions">
+      <h4>Chat Rooms</h4> 
+      <!-- <button onclick="refreshData()">Refresh</button> -->
+      <button onclick="newRoom()">+ New Chat</button>
+      <button onclick="joinRoomButton()">Join Room</button>
+      <button onclick="resetData()">Reset Data</button>
+      <ul id="sessionList"></ul>
+    </div>
+    <div class="sessions">
+      <h4>List Friends</h4>
+      <button onclick="addFriend()">+ Add friend</button>
+      <ul id="friendList"></ul>
+    </div>
+
+  </div>
+
+  <!-- CHAT AREA -->
+  <div class="chat">
+    <div class="chat-header" id="roomTitle">
+      Select a room
+    </div>
+    <div></div>
+    <div class="chat-body" id="messages"></div>
+
+    <div class="chat-input">
+      <input id="messageInput" placeholder="Type message..." />
+      <button onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+
+<div id="addFriendModal" class="modal hidden">
+  <div class="modal-content">
+    <h3>Add Friend</h3>
+
+    <input id="friendId" placeholder="Partner IP / ID">
+    <input id="friendPort" placeholder="Port">
+
+    <div class="modal-actions">
+      <button onclick="confirmAddFriend()">Add</button>
+      <button class="cancel" onclick="closeAddFriend()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="joinRoomModal" class="modal hidden">
+  <div class="modal-content">
+    <h3>Join Room</h3>
+
+    <input id="joinIp" placeholder="IP Address (e.g. 10.0.0.5)">
+    <input id="joinPort" placeholder="Port (e.g. 9000)">
+    <input id="joinRoomId" placeholder="Room ID (e.g. A1B2C3)">
+
+    <div class="modal-actions">
+        <button class="btn primary" onclick="confirmJoinRoom()">Join</button>
+        <button class="btn cancel" onclick="closeJoinRoom()">Cancel</button>
+       </div>
+  </div>
+</div>
+
+<div id="inviteFriendModal" class="modal hidden">
+  <div class="modal-content modal-split">
+
+    <!-- LEFT: INPUT -->
+    <div class="modal-left">
+      <h3>Invite to Room</h3>
+
+      <input id="joinIp" placeholder="Partner IP">
+      <input id="joinPort" placeholder="Port">
+
+      <div class="modal-actions">
+        <button class="btn primary" onclick="confirmInviteFriend()">Invite</button>
+        <button class="btn cancel" onclick="closeInviteFriend()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- RIGHT: FRIEND LIST -->
+    <div class="modal-right">
+      <h3>Friends</h3>
+      <ul id="friendList">
+        <!-- demo -->
+        <li onclick="selectFriend('192.168.1.10', '9000')">
+          <span class="friend-name">Nam</span>
+          <span class="status online">●</span>
+        </li>
+        <li onclick="selectFriend('192.168.1.20', '9001')">
+          <span class="friend-name">An</span>
+          <span class="status offline">●</span>
+        </li>
+      </ul>
+    </div>
+
+  </div>
+</div>
+
+
+</body>
+</html>
