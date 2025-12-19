@@ -1,202 +1,270 @@
-let currentUser = null;
+let socket;
+let currentUserConfig = null;
 let currentRoom = null;
+let sessions = [];
+let friends = [];
 
-const sessions = {};
-const sessionList = document.getElementById("sessionList");
-const messagesDiv = document.getElementById("messages");
-const roomTitle = document.getElementById("roomTitle");
+function initWebSocket() {
+    socket = new WebSocket("ws://localhost:8080/ws");
+    socket.onopen = function() { console.log("Connected to C# Backend"); };
+    socket.onclose = function() { console.log("Disconnected"); };
+
+    socket.onmessage = function(event) {
+        const msg = JSON.parse(event.data);
+        const data = msg.data;
+
+        switch (msg.cmd) {
+            case "INIT_USER":
+                currentUserConfig = data;
+                document.querySelector(".profile").innerHTML = `
+                    <h3>${data.Username}</h3>
+                    <p>Port: ${data.Port}</p>
+                    <button onclick="logout()">Logout / Refresh</button>
+                `;
+                break;
+            case "UPDATE_SESSIONS":
+                sessions = data;
+                renderSessions();
+                break;
+            case "UPDATE_MESSAGES":
+                // Chỉ render lại nếu đang ở đúng phòng hoặc nếu là data rỗng (clear chat)
+                if ((data.length > 0 && data[0].SessionId === currentRoom) || data.length === 0) {
+                    renderMessages(data);
+                }
+                break;
+            case "UPDATE_FRIENDS":
+                friends = data;
+                renderFriends();
+                break;
+            case "ALERT":
+                alert(data);
+                break;
+        }
+    };
+}
+
+initWebSocket();
+
+// --- BASIC COMMANDS ---
+// --- XỬ LÝ ĐĂNG NHẬP ---
 
 function login() {
-    const name = username.value.trim();
-    const port = port.value.trim();
+    // 1. Lấy dữ liệu từ ô input
+    const nameInput = document.getElementById("username");
+    const portInput = document.getElementById("port");
 
-    if (!name || !port) {
-        alert("Enter username & port");
+    const name = nameInput.value.trim();
+    const port = parseInt(portInput.value.trim());
+
+    // 2. Validate (Kiểm tra dữ liệu rỗng)
+    if (!name) {
+        alert("Vui lòng nhập Username!");
+        return;
+    }
+    if (!port || isNaN(port)) {
+        alert("Vui lòng nhập Port hợp lệ (số)!");
         return;
     }
 
-    currentUser = name;
-    alert(`Logged in as ${name}`);
+    // 3. Gửi lệnh LOGIN về C# qua WebSocket
+    // Cấu trúc data khớp với UserConfig bên C#
+    sendCmd("LOGIN", { username: name, port: port });
 }
 
-function newRoom() {
-    document.getElementById("newRoomModel")
-        .classList.remove("hidden");
+function logout() {
+    // Reload trang để reset lại kết nối
+    if(confirm("Bạn muốn đăng xuất?")) {
+        location.reload(); 
+    }
 }
 
+// Hàm cập nhật giao diện sau khi C# phản hồi đăng nhập thành công
+// Hàm này được gọi trong socket.onmessage khi cmd == "INIT_USER"
+function updateProfileUI(user) {
+    if (!user) return;
+
+    // Lưu config vào biến toàn cục
+    currentUserConfig = user;
+
+    // Ẩn form đăng nhập
+    document.getElementById("login-form").classList.add("hidden");
+    
+    // Hiện thông tin user
+    document.getElementById("user-info").classList.remove("hidden");
+    document.getElementById("display-name").textContent = user.Username;
+    document.getElementById("display-port").textContent = user.Port;
+}
+
+// --- SỬA LẠI socket.onmessage ĐỂ GỌI updateProfileUI ---
+// Tìm đoạn socket.onmessage trong initWebSocket() và đảm bảo case INIT_USER như sau:
+
+/* socket.onmessage = function(event) {
+       const msg = JSON.parse(event.data);
+       const data = msg.data;
+
+       switch (msg.cmd) {
+           case "INIT_USER":
+               // GỌI HÀM CẬP NHẬT GIAO DIỆN Ở ĐÂY
+               updateProfileUI(data); 
+               break;
+           
+           // ... các case khác giữ nguyên
+       }
+   };
+*/
+
+// [TÍNH NĂNG MỚI] RESET DATA
+function resetData() {
+    if (confirm("Are you sure you want to delete all data and reset?")) {
+        sendCmd("RESET_APP", {}); // Gửi object rỗng để tránh lỗi null bên C#
+    }
+}
+
+// [TÍNH NĂNG MỚI] REFRESH (Thực ra C# tự đẩy data, nhưng nút này có thể dùng để reload trang)
+function refreshData() {
+    location.reload();
+}
+
+function sendCmd(cmd, data) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ cmd: cmd, data: data }));
+    } else {
+        alert("Server not connected.");
+    }
+}
+
+// --- ROOMS ---
+function newRoom() { document.getElementById("newRoomModel").classList.remove("hidden"); }
+function closeNewRoom() { document.getElementById("newRoomModel").classList.add("hidden"); }
 function confirmNewRoom() {
     const id = document.getElementById("newRoomId").value.trim();
-    if (!id) {
-        alert("Enter room ID");
-        return;
-    }
-    if (!id) return;
-
-    const roomId = id.trim().toUpperCase();
-    if (sessions[roomId]) {
-        alert("Room already exists!");
-        return;
-    }
-
-    sessions[roomId] = [];
-    renderSessions();
+    if (id) sendCmd("CREATE_ROOM", { roomId: id });
     closeNewRoom();
 }
 
-
-function closeNewRoom() {
-    document.getElementById("newRoomModel")
-        .classList.add("hidden");
-    document.getElementById("newRoomId").value = "";
-
-}
-
 function renderSessions() {
-    sessionList.innerHTML = "";
-    Object.keys(sessions).forEach(id => {
+    const list = document.getElementById("sessionList");
+    list.innerHTML = "";
+    sessions.forEach(s => {
         const li = document.createElement("li");
-        li.textContent = id;
-        li.className = id === currentRoom ? "active" : "";
-        li.onclick = () => joinRoom(id);
-        sessionList.appendChild(li);
+        li.textContent = `${s.Name} (${s.SessionId})`;
+        li.className = s.SessionId === currentRoom ? "active" : "";
+        li.onclick = () => joinChat(s.SessionId, s.Name);
+        list.appendChild(li);
     });
 }
 
-function joinRoom(id) {
+function joinChat(id, name) {
     currentRoom = id;
-
-    roomTitle.innerHTML = `
-        <span>Room ${id}</span>
-        <button class="invite-btn" onclick="inviteFriend()">
-            Invite friend
-        </button>
+    document.getElementById("roomTitle").innerHTML = `
+        <span>${name} (${id})</span>
+        <button class="invite-btn" onclick="inviteFriend()">+ Invite</button>
     `;
-
     renderSessions();
-    renderMessages();
+    sendCmd("GET_MESSAGES", { sessionId: id });
 }
 
+// --- MESSAGES (SEND, EDIT, DELETE) ---
 function sendMessage() {
     if (!currentRoom) return;
-
-    const text = messageInput.value.trim();
+    const input = document.getElementById("messageInput");
+    const text = input.value.trim();
     if (!text) return;
-
-    sessions[currentRoom].push({
-        sender: currentUser,
-        content: text
-    });
-
-    messageInput.value = "";
-    renderMessages();
+    sendCmd("SEND_MSG", { sessionId: currentRoom, content: text });
+    input.value = "";
 }
 
-function renderMessages() {
-  messagesDiv.innerHTML = "";
+function renderMessages(msgs) {
+    const div = document.getElementById("messages");
+    div.innerHTML = "";
+    msgs.forEach(m => {
+        const isMe = currentUserConfig && m.SenderName === currentUserConfig.Username;
+        const wrapper = document.createElement("div");
+        wrapper.className = "message-wrapper " + (isMe ? "me" : "other");
 
-  sessions[currentRoom].forEach((m, index) => {
-    const wrapper = document.createElement("div");
-    wrapper.className =
-      "message-wrapper " +
-      (m.sender === currentUser ? "me" : "other");
-
-    wrapper.innerHTML = `
-      <div class="message-bubble">
-        <span class="message-text">${m.content}</span>
-
-        ${
-          m.sender === currentUser
-            ? `
-            <div class="message-actions">
-              <span class="dots">⋮</span>
-              <div class="dropdown">
-                <div onclick="editMessage(${index})">Edit</div>
-                <div onclick="deleteMessage(${index})">Delete</div>
-              </div>
-            </div>
-            `
-            : ""
+        let contentHtml = `<span class="message-text">${m.Content}</span>`;
+        if (m.Type === 5) { // Invite
+            wrapper.className = "message-wrapper system";
+            contentHtml = `<small><i>${m.SenderName} invited you.</i></small>`;
         }
-      </div>
-    `;
 
-    messagesDiv.appendChild(wrapper);
-  });
-
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        // [QUAN TRỌNG] Gắn ID tin nhắn vào hàm edit/delete
+        // Chú ý dấu nháy đơn bao quanh ID: editMessage('${m.Id}')
+        wrapper.innerHTML = `
+            <div class="message-bubble">
+                <div class="sender-name">${m.SenderName}</div>
+                ${contentHtml}
+                ${isMe && m.Type === 2 ? `
+                <div class="message-actions">
+                  <span class="dots">⋮</span>
+                  <div class="dropdown">
+                    <div onclick="editMessage('${m.Id}', '${m.Content}')">Edit</div>
+                    <div onclick="deleteMessage('${m.Id}')">Delete</div>
+                  </div>
+                </div>` : ""}
+            </div>
+        `;
+        div.appendChild(wrapper);
+    });
+    div.scrollTop = div.scrollHeight;
 }
 
-
-
-function addFriend() {
-    document.getElementById("addFriendModal")
-        .classList.remove("hidden");
-}
-
-function closeAddFriend() {
-    document.getElementById("addFriendModal")
-        .classList.add("hidden");
-
-    document.getElementById("friendId").value = "";
-    document.getElementById("friendPort").value = "";
-}
-
-function confirmAddFriend() {
-    const id = document.getElementById("friendId").value.trim();
-    const port = document.getElementById("friendPort").value.trim();
-
-    if (!id || !port) {
-        alert("Please enter Partner ID and Port");
-        return;
+// [TÍNH NĂNG MỚI] XỬ LÝ EDIT
+function editMessage(msgId, oldContent) {
+    const newContent = prompt("Edit message:", oldContent);
+    if (newContent !== null && newContent !== oldContent) {
+        sendCmd("EDIT_MSG", { msgId: msgId, newContent: newContent, sessionId: currentRoom });
     }
+}
 
-    console.log("Add friend:", id, port);
+// [TÍNH NĂNG MỚI] XỬ LÝ DELETE
+function deleteMessage(msgId) {
+    if (confirm("Delete this message?")) {
+        sendCmd("DELETE_MSG", { msgId: msgId, sessionId: currentRoom });
+    }
+}
 
-    alert(`Friend request sent to ${id}:${port}`);
+// --- JOIN & INVITE & FRIEND ---
+function joinRoomButton() { document.getElementById("joinRoomModal").classList.remove("hidden"); }
+function closeJoinRoom() { document.getElementById("joinRoomModal").classList.add("hidden"); }
+function confirmJoinRoom() {
+    const ip = document.getElementById("joinIp").value;
+    const port = document.getElementById("joinPort").value;
+    const rid = document.getElementById("joinRoomId").value;
+    if(ip && port && rid) sendCmd("JOIN_ROOM", { ip: ip, port: parseInt(port), roomId: rid });
+    closeJoinRoom();
+}
 
+function inviteFriend() { document.getElementById("inviteFriendModal").classList.remove("hidden"); }
+function closeInviteFriend() { document.getElementById("inviteFriendModal").classList.add("hidden"); }
+function selectFriend(ip, port) {
+    if(!currentRoom) return alert("Select room first");
+    if(confirm(`Invite friend at ${ip}:${port}?`)) {
+        sendCmd("INVITE_FRIEND", { ip: ip, port: parseInt(port), roomId: currentRoom });
+        closeInviteFriend();
+    }
+}
+
+function addFriend() { document.getElementById("addFriendModal").classList.remove("hidden"); }
+function closeAddFriend() { document.getElementById("addFriendModal").classList.add("hidden"); }
+function confirmAddFriend() {
+    const ip = document.getElementById("friendId").value;
+    const port = document.getElementById("friendPort").value;
+    if(ip && port) sendCmd("ADD_FRIEND_REQ", { ip: ip, port: parseInt(port) });
     closeAddFriend();
 }
 
-function joinRoomButton() {
-    document.getElementById("joinRoomModal")
-        .classList.remove("hidden");
-}
+function renderFriends() {
+    const list = document.getElementById("friendList");
+    const modalList = document.querySelector(".modal-right ul");
+    
+    const html = friends.map(f => `
+        <li onclick="selectFriend('${f.Ip}', ${f.Port})">
+            <span>${f.Name}</span>
+            <span class="status ${f.IsOnline ? 'online' : 'offline'}">●</span>
+        </li>
+    `).join("");
 
-function closeJoinRoom() {
-    document.getElementById("joinRoomModal")
-        .classList.add("hidden");
-    document.getElementById("joinIp").value = "";
-    document.getElementById("joinPort").value = "";
-    document.getElementById("joinRoomId").value = "";
-}
-
-
-
-function confirmJoinRoom() {
-    const ip = document.getElementById("joinIp").value.trim();
-    const port = document.getElementById("joinPort").value.trim();
-    const roomId = document.getElementById("joinRoomId").value.trim();
-
-
-    console.log("JOIN ROOM:", ip, port, roomId);
-
-    //   alert(`Joining room ${roomId}\n${ip}:${port}`);
-
-    closeJoinRoom();
-
-    console.log(document.getElementById("joinIp").value = "");
-    document.getElementById("joinPort").value = "";
-    document.getElementById("joinRoomId").value = "";
-}
-
-function inviteFriend(){
-     document.getElementById("inviteFriendModal")
-        .classList.remove("hidden");
-}
-
-function closeInviteFriend(){
-    document.getElementById("inviteFriendModal")
-        .classList.add("hidden");
-    document.getElementById("joinIp").value = "";
-    document.getElementById("joinPort").value = "";
+    if(list) list.innerHTML = html;
+    if(modalList) modalList.innerHTML = html;
 }

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>P2P Chat C# Integration</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="app">
+        <div class="sidebar">
+            <div class="sidebar">
+
+                <div class="profile">
+
+                    <div id="login-form">
+                        <input id="username" placeholder="Username (e.g. Huy)" />
+                        <input id="port" type="number" placeholder="Port (e.g. 9000)" />
+                        <button onclick="login()" class="btn-primary">Login</button>
+                    </div>
+
+                    <div id="user-info" class="hidden">
+                        <h3 id="display-name">User Name</h3>
+                        <p>Port: <span id="display-port">---</span></p>
+                        <!--<button onclick="logout()" class="btn-cancel">Logout</button>-->
+                    </div>
+
+                </div>
+
+                <div class="sessions">
+                    <h4>System</h4>
+                    <button onclick="refreshData()">Refresh</button>
+
+                    <button onclick="resetData()" class="btn-danger" style="margin-top: 10px;">⚠ Reset All Data</button>
+                </div>
+            </div>
+
+            <div class="sessions">
+                <h4>Chat Rooms</h4>
+                <button onclick="newRoom()">+ New Chat</button>
+                <button onclick="joinRoomButton()">Join External Room</button>
+                <ul id="sessionList"></ul>
+            </div>
+            <div class="sessions" style="border-top: 1px solid #333;">
+                <h4>Friends</h4>
+                <button onclick="addFriend()">+ Add friend</button>
+                <ul id="friendList" class="friendList"></ul>
+            </div>
+        </div>
+
+        <div class="chat">
+            <div class="chat-header" id="roomTitle">Select a room</div>
+            <div class="chat-body" id="messages"></div>
+            <div class="chat-input">
+                <input id="messageInput" placeholder="Type message..." />
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="newRoomModel" class="modal hidden">
+        <div class="modal-content">
+            <h3>Create New Room</h3>
+            <input id="newRoomId" placeholder="Enter Room Name...">
+
+            <div class="modal-actions">
+                <button onclick="confirmNewRoom()">Create</button>
+                <button class="cancel" onclick="closeNewRoom()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="joinRoomModal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Join Remote Room</h3>
+            <input id="joinIp" placeholder="IP Address">
+            <input id="joinPort" placeholder="Port">
+            <input id="joinRoomId" placeholder="Room ID">
+            <div class="modal-actions">
+                <button onclick="confirmJoinRoom()">Join</button>
+                <button class="cancel" onclick="closeJoinRoom()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="addFriendModal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Add Friend</h3>
+            <input id="friendId" placeholder="Friend IP">
+            <input id="friendPort" placeholder="Friend Port">
+            <div class="modal-actions">
+                <button onclick="confirmAddFriend()">Send Request</button>
+                <button class="cancel" onclick="closeAddFriend()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="inviteFriendModal" class="modal hidden">
+        <div class="modal-content modal-split">
+            <div class="modal-right" style="width:100%">
+                <h3>Select Friend to Invite</h3>
+                <ul></ul>
+                <button class="cancel" style="margin-top:10px" onclick="closeInviteFriend()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

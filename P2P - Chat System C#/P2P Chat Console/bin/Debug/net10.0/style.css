@@ -368,3 +368,14 @@ body {
 .dropdown div:hover {
   background: #f0f0f0;
 }
+/* Thêm vào style.css */
+.btn-danger {
+  background-color: #d9534f; /* Màu đỏ */
+  color: white;
+  border: none;
+  font-weight: bold;
+}
+
+.btn-danger:hover {
+  background-color: #c9302c;
+}
