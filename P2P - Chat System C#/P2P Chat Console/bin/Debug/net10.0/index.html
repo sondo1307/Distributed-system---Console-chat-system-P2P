@@ -9,30 +9,22 @@
 
     <div class="app">
         <div class="sidebar">
-            <div class="sidebar">
-
-                <div class="profile">
-
-                    <div id="login-form">
-                        <input id="username" placeholder="Username (e.g. Huy)" />
-                        <input id="port" type="number" placeholder="Port (e.g. 9000)" />
-                        <button onclick="login()" class="btn-primary">Login</button>
-                    </div>
-
-                    <div id="user-info" class="hidden">
-                        <h3 id="display-name">User Name</h3>
-                        <p>Port: <span id="display-port">---</span></p>
-                        <!--<button onclick="logout()" class="btn-cancel">Logout</button>-->
-                    </div>
-
+            <div class="profile">
+                <div id="login-form">
+                    <input id="username" placeholder="Username (e.g. Huy)" />
+                    <input id="port" type="number" placeholder="Port (e.g. 9000)" />
+                    <button onclick="login()" class="btn-primary">Login</button>
                 </div>
-
-                <div class="sessions">
-                    <h4>System</h4>
-                    <button onclick="refreshData()">Refresh</button>
-
-                    <button onclick="resetData()" class="btn-danger" style="margin-top: 10px;">⚠ Reset All Data</button>
+                <div id="user-info" class="hidden">
+                    <h3 id="display-name">User Name</h3>
+                    <p>Port: <span id="display-port">---</span></p>
                 </div>
+            </div>
+
+            <div class="sessions">
+                <h4>System</h4>
+                <button onclick="refreshData()">Refresh</button>
+                <button onclick="resetData()" class="btn-danger" style="margin-top: 10px;">⚠ Reset All Data</button>
             </div>
 
             <div class="sessions">
@@ -62,7 +54,6 @@
         <div class="modal-content">
             <h3>Create New Room</h3>
             <input id="newRoomId" placeholder="Enter Room Name...">
-
             <div class="modal-actions">
                 <button onclick="confirmNewRoom()">Create</button>
                 <button class="cancel" onclick="closeNewRoom()">Cancel</button>
@@ -101,6 +92,18 @@
                 <h3>Select Friend to Invite</h3>
                 <ul></ul>
                 <button class="cancel" style="margin-top:10px" onclick="closeInviteFriend()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="inviteIpModal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Invite by IP</h3>
+            <input id="invIp" placeholder="IP Address">
+            <input id="invPort" placeholder="Port">
+            <div class="modal-actions">
+                <button onclick="confirmInviteIp()">Invite</button>
+                <button class="cancel" onclick="closeInviteIp()">Cancel</button>
             </div>
         </div>
     </div>
