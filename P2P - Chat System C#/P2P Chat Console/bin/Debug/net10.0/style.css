@@ -201,19 +201,6 @@ body {
   /* background: #3a3a5a; */
 }
 
-/* status */
-.status {
-  font-size: 12px;
-}
-
-.status.online {
-  color: #4caf50;
-}
-
-.status.offline {
-  color: #888;
-}
-
 .modal-split {
   display: flex;
 }
@@ -378,4 +365,18 @@ body {
 
 .btn-danger:hover {
   background-color: #c9302c;
+}
+
+.status {
+  font-size: 14px; /* To hơn chút cho dễ nhìn */
+  margin-left: 5px;
+}
+
+.status.online {
+  color: #00e676; /* Màu xanh lá sáng */
+  text-shadow: 0 0 5px #00e676; /* Hiệu ứng phát sáng */
+}
+
+.status.offline {
+  color: #555;
 }
