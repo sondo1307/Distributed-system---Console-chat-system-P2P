@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 
 namespace P2PFinalJson
 {
-    // --- MODELS (GIỮ NGUYÊN) ---
+    // --- MODELS GIỮ NGUYÊN ---
     public enum PacketType { Hello, System, Message, Edit, Delete, Invite, Ping, FriendReq, FriendRes }
     public class UserConfig { public string Username { get; set; } public int Port { get; set; } }
     public class ChatSession { public string SessionId { get; set; } public string Name { get; set; } public DateTime LastActive { get; set; } }
@@ -40,7 +40,7 @@ namespace P2PFinalJson
     }
     public class UICommand { public string Cmd { get; set; } public object Data { get; set; } }
 
-    // --- JSON MANAGER (GIỮ NGUYÊN) ---
+    // --- JSON MANAGER GIỮ NGUYÊN ---
     public static class JsonManager
     {
         private static string DataFolder = "Data";
@@ -85,21 +85,29 @@ namespace P2PFinalJson
                 if (p.SessionId != null) UpsertSession(p.SessionId, updateName);
                 string path = Path.Combine(DataFolder, $"msg_{p.SessionId}.json");
                 List<ChatPacket> msgs = File.Exists(path) ? (JsonSerializer.Deserialize<List<ChatPacket>>(File.ReadAllText(path)) ?? new List<ChatPacket>()) : new List<ChatPacket>();
-                if (p.Type == PacketType.Message || p.Type == PacketType.Invite || p.Type == PacketType.System) { if (!msgs.Any(x => x.Id == p.Id)) msgs.Add(p); }
-                else if (p.Type == PacketType.Edit) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) target.Content = p.Content + " (edited)"; }
-                else if (p.Type == PacketType.Delete) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) msgs.Remove(target); }
-                File.WriteAllText(path, JsonSerializer.Serialize(msgs));
+
+                // [MESH FIX] Chỉ lưu nếu chưa có
+                if (!msgs.Any(x => x.Id == p.Id))
+                {
+                    if (p.Type == PacketType.Message || p.Type == PacketType.Invite || p.Type == PacketType.System) msgs.Add(p);
+                    else if (p.Type == PacketType.Edit) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) target.Content = p.Content + " (edited)"; }
+                    else if (p.Type == PacketType.Delete) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) msgs.Remove(target); }
+                    File.WriteAllText(path, JsonSerializer.Serialize(msgs));
+                }
             }
         }
     }
 
-    // --- MAIN PROGRAM ---
     class Program
     {
         static UserConfig _currentUser;
         static TcpListener _server;
         static List<TcpClient> _neighbors = new List<TcpClient>();
         static ConcurrentDictionary<TcpClient, HashSet<string>> _socketSubscriptions = new ConcurrentDictionary<TcpClient, HashSet<string>>();
+
+        // [MESH FIX 1] Cache lưu các Message ID đã xử lý để tránh lặp vô tận
+        static ConcurrentDictionary<string, byte> _processedPacketIds = new ConcurrentDictionary<string, byte>();
+
         static WebSocket _uiSocket;
         static int _uiPort = 8080;
 
@@ -174,7 +182,7 @@ namespace P2PFinalJson
                         await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
                         break;
                     case "RESET_APP":
-                        try { JsonManager.DeleteAllData(); _currentUser = null; await SendToUI("RESET_SUCCESS", "Done"); } catch (Exception ex) { await SendToUI("ALERT", "Error: " + ex.Message); }
+                        try { JsonManager.DeleteAllData(); _currentUser = null; _processedPacketIds.Clear(); await SendToUI("RESET_SUCCESS", "Done"); } catch (Exception ex) { await SendToUI("ALERT", "Error: " + ex.Message); }
                         break;
                     case "GET_MESSAGES":
                         await SendToUI("UPDATE_MESSAGES", JsonManager.GetMessages(data.GetProperty("sessionId").GetString()));
@@ -184,7 +192,11 @@ namespace P2PFinalJson
                         string content = data.GetProperty("content").GetString();
                         string gName = JsonManager.GetSessionName(tSid);
                         var pkt = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = tSid, GroupName = gName, Type = PacketType.Message, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = content, Timestamp = DateTime.Now };
-                        ProcessPacket(pkt); Broadcast(pkt);
+
+                        // Xử lý gói tin của chính mình
+                        _processedPacketIds.TryAdd(pkt.Id, 0); // Đánh dấu đã xử lý
+                        ProcessPacket(pkt);
+                        Broadcast(pkt, null); // Gửi cho tất cả hàng xóm
                         break;
                     case "CREATE_ROOM":
                         string rName = data.GetProperty("roomName").GetString();
@@ -223,13 +235,15 @@ namespace P2PFinalJson
                         string nTx = data.GetProperty("newContent").GetString();
                         string sId = data.GetProperty("sessionId").GetString();
                         var ePkt = new ChatPacket { Id = Guid.NewGuid().ToString(), TargetId = eId, SessionId = sId, Type = PacketType.Edit, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = nTx, Timestamp = DateTime.Now };
-                        ProcessPacket(ePkt); Broadcast(ePkt);
+                        _processedPacketIds.TryAdd(ePkt.Id, 0);
+                        ProcessPacket(ePkt); Broadcast(ePkt, null);
                         break;
                     case "DELETE_MSG":
                         string dId = data.GetProperty("msgId").GetString();
                         string dsId = data.GetProperty("sessionId").GetString();
                         var dPkt = new ChatPacket { Id = Guid.NewGuid().ToString(), TargetId = dId, SessionId = dsId, Type = PacketType.Delete, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Timestamp = DateTime.Now };
-                        ProcessPacket(dPkt); Broadcast(dPkt);
+                        _processedPacketIds.TryAdd(dPkt.Id, 0);
+                        ProcessPacket(dPkt); Broadcast(dPkt, null);
                         break;
                 }
             }
@@ -252,40 +266,52 @@ namespace P2PFinalJson
 
                     if (p.Type == PacketType.Ping) continue;
 
+                    // Cập nhật subscription
                     if (!string.IsNullOrEmpty(p.SessionId))
                     {
                         if (_socketSubscriptions.ContainsKey(c)) _socketSubscriptions[c].Add(p.SessionId);
                     }
 
-                    // [ĐÃ SỬA] XỬ LÝ KHI CÓ NGƯỜI JOIN/INVITE
+                    // Handshake logic (Invite, FriendReq, FriendRes...)
                     if (p.Type == PacketType.Invite)
                     {
                         var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
-
-                        // 1. Gửi lại tên phòng (để sửa lỗi hiển thị "Joining...")
                         string hostRoomName = JsonManager.GetSessionName(p.SessionId);
                         if (!string.IsNullOrEmpty(hostRoomName) && hostRoomName != "Joining..." && hostRoomName != "Unknown")
                         {
                             var infoPkt = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = p.SessionId, GroupName = hostRoomName, Type = PacketType.System, SenderName = "System", Content = $"Joined room: {hostRoomName}", Timestamp = DateTime.Now };
                             await w.WriteLineAsync(JsonSerializer.Serialize(infoPkt));
                         }
-
-                        // 2. [SYNC CHAT] Gửi toàn bộ lịch sử tin nhắn cho người mới vào
                         var history = JsonManager.GetMessages(p.SessionId);
                         foreach (var oldMsg in history)
                         {
-                            // Chỉ gửi tin nhắn văn bản (Message) hoặc System
                             if (oldMsg.Type == PacketType.Message || oldMsg.Type == PacketType.System)
                             {
-                                await Task.Delay(5); // Delay cực ngắn để tránh dính gói tin (TCP stream)
-                                await w.WriteLineAsync(JsonSerializer.Serialize(oldMsg));
+                                await Task.Delay(5); await w.WriteLineAsync(JsonSerializer.Serialize(oldMsg));
                             }
                         }
                     }
 
                     if (p.Type == PacketType.FriendReq) { await SendToUI("FRIEND_REQ_RECEIVED", new { name = p.SenderName, ip = p.SenderInfo.Split(':')[0], port = int.Parse(p.SenderInfo.Split(':')[1]) }); continue; }
                     if (p.Type == PacketType.FriendRes) { if (p.Content == "YES") { JsonManager.AddFriend(p.SenderName, p.SenderInfo.Split(':')[0], int.Parse(p.SenderInfo.Split(':')[1])); await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends()); await SendToUI("ALERT", $"{p.SenderName} accepted!"); } continue; }
-                    ProcessPacket(p);
+
+                    // [MESH FIX 2] LOGIC ROUTING / RELAYING
+                    // Chỉ relay các gói tin Chat/Edit/Delete
+                    if (p.Type == PacketType.Message || p.Type == PacketType.Edit || p.Type == PacketType.Delete || p.Type == PacketType.System)
+                    {
+                        // Kiểm tra xem đã xử lý gói tin này chưa (tránh vòng lặp)
+                        if (_processedPacketIds.ContainsKey(p.Id)) continue;
+
+                        // Đánh dấu đã xử lý
+                        _processedPacketIds.TryAdd(p.Id, 0);
+
+                        // 1. Xử lý cho bản thân (Lưu + Hiện lên UI)
+                        ProcessPacket(p);
+
+                        // 2. [QUAN TRỌNG] Forward (Relay) cho tất cả các kết nối KHÁC
+                        // (Trừ thằng gửi gói tin này cho mình - là thằng 'c')
+                        Broadcast(p, c);
+                    }
                 }
             }
             catch { }
@@ -294,11 +320,15 @@ namespace P2PFinalJson
 
         static void ProcessPacket(ChatPacket p) { JsonManager.HandlePacketStorage(p); _ = SendToUI("UPDATE_MESSAGES", JsonManager.GetMessages(p.SessionId)); _ = SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions()); }
 
-        static void Broadcast(ChatPacket p)
+        // [MESH FIX 3] Broadcast loại trừ người gửi (excludeClient)
+        static void Broadcast(ChatPacket p, TcpClient excludeClient)
         {
             string j = JsonSerializer.Serialize(p);
             foreach (var c in _neighbors.ToList())
             {
+                // Không gửi ngược lại cho người vừa gửi tin cho mình
+                if (c == excludeClient) continue;
+
                 try
                 {
                     bool shouldSend = true;
