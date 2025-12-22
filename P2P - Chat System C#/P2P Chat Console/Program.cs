@@ -1,5 +1,5 @@
 ﻿using System;
-using System.Collections.Concurrent; // [MỚI] Thêm thư viện này để quản lý luồng
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -54,7 +54,6 @@ namespace P2PFinalJson
         public static void SaveConfig(UserConfig config) { lock (_fileLock) File.WriteAllText(ConfigFile, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true })); }
         public static List<ChatSession> LoadSessions() { lock (_fileLock) { if (!File.Exists(SessionsFile)) return new List<ChatSession>(); try { return JsonSerializer.Deserialize<List<ChatSession>>(File.ReadAllText(SessionsFile)) ?? new List<ChatSession>(); } catch { return new List<ChatSession>(); } } }
 
-        // [ĐÃ SỬA] Logic cập nhật tên session thông minh hơn
         public static void UpsertSession(string sessionId, string name)
         {
             lock (_fileLock)
@@ -65,8 +64,6 @@ namespace P2PFinalJson
                 {
                     existing.LastActive = DateTime.Now;
 
-                    // Chỉ đổi tên nếu tên hiện tại là tên tạm (Joining, New Chat...)
-                    // Nếu người dùng đã đặt tên riêng, giữ nguyên tên đó.
                     bool isPlaceholder = existing.Name == "Joining..." || existing.Name == "New Chat" || existing.Name == "Unknown" || existing.Name.StartsWith("Chat with");
                     bool isNewNameValid = !string.IsNullOrEmpty(name) && name != "Joining..." && name != "Unknown";
 
@@ -109,10 +106,7 @@ namespace P2PFinalJson
         static UserConfig _currentUser;
         static TcpListener _server;
         static List<TcpClient> _neighbors = new List<TcpClient>();
-
-        // [MỚI] Biến quản lý định tuyến: Socket này đang tham gia những SessionId nào?
         static ConcurrentDictionary<TcpClient, HashSet<string>> _socketSubscriptions = new ConcurrentDictionary<TcpClient, HashSet<string>>();
-
         static WebSocket _uiSocket;
         static int _uiPort = 8080;
 
@@ -120,14 +114,8 @@ namespace P2PFinalJson
         {
             JsonManager.Initialize(args.Length > 0 ? args[0] : null);
             _currentUser = JsonManager.LoadConfig();
-
             _ = Task.Run(() => StartWebServer());
-
-            if (_currentUser != null)
-            {
-                _ = Task.Run(() => StartServer());
-                _ = Task.Run(() => StartOnlineChecker());
-            }
+            if (_currentUser != null) { _ = Task.Run(() => StartServer()); _ = Task.Run(() => StartOnlineChecker()); }
             Console.WriteLine($"=== SERVER RUNNING: http://localhost:{_uiPort} ===");
             Console.ReadLine();
         }
@@ -157,7 +145,6 @@ namespace P2PFinalJson
         {
             var wsContext = await context.AcceptWebSocketAsync(null);
             _uiSocket = wsContext.WebSocket;
-
             if (_currentUser != null)
             {
                 var userInfo = new { _currentUser.Username, _currentUser.Port, Ip = GetLocalIP() };
@@ -165,7 +152,6 @@ namespace P2PFinalJson
                 await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList());
                 await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
             }
-
             byte[] buffer = new byte[4096];
             try { while (_uiSocket.State == WebSocketState.Open) { var result = await _uiSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None); if (result.MessageType == WebSocketMessageType.Close) break; HandleUICommand(Encoding.UTF8.GetString(buffer, 0, result.Count)); } } catch { }
         }
@@ -187,16 +173,13 @@ namespace P2PFinalJson
                         int p = data.GetProperty("port").ValueKind == JsonValueKind.String ? int.Parse(data.GetProperty("port").GetString()) : data.GetProperty("port").GetInt32();
                         _currentUser = new UserConfig { Username = u, Port = p };
                         JsonManager.SaveConfig(_currentUser);
-
                         if (_server == null) _ = Task.Run(() => StartServer());
                         _ = Task.Run(() => StartOnlineChecker());
-
                         var loginInfo = new { _currentUser.Username, _currentUser.Port, Ip = GetLocalIP() };
                         await SendToUI("INIT_USER", loginInfo);
                         await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions());
                         await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
                         break;
-
                     case "RESET_APP":
                         try { JsonManager.DeleteAllData(); _currentUser = null; await SendToUI("RESET_SUCCESS", "Done"); } catch (Exception ex) { await SendToUI("ALERT", "Error: " + ex.Message); }
                         break;
@@ -218,7 +201,7 @@ namespace P2PFinalJson
                         string jRid = data.GetProperty("roomId").GetString();
                         if (await ConnectAndJoin(data.GetProperty("ip").GetString(), data.GetProperty("port").GetInt32(), jRid))
                         {
-                            JsonManager.UpsertSession(jRid, "Joining..."); // Tên này sẽ được update khi nhận history tin nhắn
+                            JsonManager.UpsertSession(jRid, "Joining...");
                             await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions());
                             await SendToUI("ALERT", "Joined!");
                         }
@@ -264,10 +247,8 @@ namespace P2PFinalJson
 
         static void StartServer() { try { if (_server == null) { _server = new TcpListener(IPAddress.Any, _currentUser.Port); _server.Start(); _ = Task.Run(async () => { while (true) { try { var c = await _server.AcceptTcpClientAsync(); _neighbors.Add(c); _ = Task.Run(() => HandleClient(c)); } catch { break; } } }); } } catch { } }
 
-        // [ĐÃ SỬA] Xử lý routing tin nhắn để không bị spam
         static async Task HandleClient(TcpClient c)
         {
-            // Khởi tạo danh sách theo dõi phòng cho client này
             _socketSubscriptions.TryAdd(c, new HashSet<string>());
 
             try
@@ -278,11 +259,33 @@ namespace P2PFinalJson
 
                     if (p.Type == PacketType.Ping) continue;
 
-                    // Nếu gói tin thuộc Session nào, đánh dấu Socket này đang ở trong Session đó
                     if (!string.IsNullOrEmpty(p.SessionId))
                     {
                         if (_socketSubscriptions.ContainsKey(c))
                             _socketSubscriptions[c].Add(p.SessionId);
+                    }
+
+                    // [ĐÃ SỬA] Khi nhận được lời mời (người khác join vào), Host gửi lại ngay tên phòng thật
+                    if (p.Type == PacketType.Invite)
+                    {
+                        string hostRoomName = JsonManager.GetSessionName(p.SessionId);
+                        // Chỉ gửi nếu tên phòng hợp lệ
+                        if (!string.IsNullOrEmpty(hostRoomName) && hostRoomName != "Joining..." && hostRoomName != "Unknown")
+                        {
+                            var infoPkt = new ChatPacket
+                            {
+                                Id = Guid.NewGuid().ToString(),
+                                SessionId = p.SessionId,
+                                GroupName = hostRoomName, // Gửi tên thật về
+                                Type = PacketType.System,
+                                SenderName = "System",
+                                Content = $"Joined room: {hostRoomName}",
+                                Timestamp = DateTime.Now
+                            };
+                            // Gửi riêng cho người vừa join
+                            var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
+                            await w.WriteLineAsync(JsonSerializer.Serialize(infoPkt));
+                        }
                     }
 
                     if (p.Type == PacketType.FriendReq) { await SendToUI("FRIEND_REQ_RECEIVED", new { name = p.SenderName, ip = p.SenderInfo.Split(':')[0], port = int.Parse(p.SenderInfo.Split(':')[1]) }); continue; }
@@ -294,13 +297,12 @@ namespace P2PFinalJson
             finally
             {
                 _neighbors.Remove(c);
-                _socketSubscriptions.TryRemove(c, out _); // Xóa đăng ký khi ngắt kết nối
+                _socketSubscriptions.TryRemove(c, out _);
             }
         }
 
         static void ProcessPacket(ChatPacket p) { JsonManager.HandlePacketStorage(p); _ = SendToUI("UPDATE_MESSAGES", JsonManager.GetMessages(p.SessionId)); _ = SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions()); }
 
-        // [ĐÃ SỬA] Hàm Broadcast thông minh hơn: Chỉ gửi cho người ở trong phòng
         static void Broadcast(ChatPacket p)
         {
             string j = JsonSerializer.Serialize(p);
@@ -308,7 +310,6 @@ namespace P2PFinalJson
             {
                 try
                 {
-                    // LỌC: Chỉ gửi nếu gói tin không có SessionId (System) HOẶC nếu Client đang theo dõi SessionId đó
                     bool shouldSend = true;
                     if (!string.IsNullOrEmpty(p.SessionId))
                     {
@@ -356,7 +357,6 @@ namespace P2PFinalJson
                 await c.ConnectAsync(ip, port);
                 _neighbors.Add(c);
 
-                // [ĐÃ SỬA] Đăng ký ngay socket này vào SessionId mục tiêu
                 _socketSubscriptions.TryAdd(c, new HashSet<string> { tSid });
 
                 string gName = JsonManager.GetSessionName(tSid);
