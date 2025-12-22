@@ -34,12 +34,17 @@ function initWebSocket() {
 
         switch (msg.cmd) {
             case "INIT_USER":
-                currentUserConfig = data;
-                document.querySelector(".profile").innerHTML = `
-                    <h3>${data.Username}</h3>
-                    <p>Port: ${data.Port}</p>
-                `;
-                break;
+		currentUserConfig = data;
+    
+    		// [ĐÃ SỬA] Thêm dòng hiển thị IP vào giữa Tên và Port
+    		document.querySelector(".profile").innerHTML = `
+        		<div id="user-info">
+            			<h3>${data.Username}</h3>
+            			<p>IP: <span style="font-weight:bold; color:#4CAF50">${data.Ip}</span></p>
+            			<p>Port: ${data.Port}</p>
+        		</div>
+    		`;
+    		break;
             case "UPDATE_SESSIONS":
                 sessions = data;
                 renderSessions();

@@ -128,7 +128,13 @@ namespace P2PFinalJson
             // Gửi dữ liệu ban đầu ngay khi kết nối
             if (_currentUser != null)
             {
-                await SendToUI("INIT_USER", _currentUser);
+                var userInfo = new
+                {
+                    _currentUser.Username,
+                    _currentUser.Port,
+                    Ip = GetLocalIP() // Thêm dòng này
+                };
+                await SendToUI("INIT_USER", userInfo);
                 await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList());
                 await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
             }
@@ -155,11 +161,19 @@ namespace P2PFinalJson
                         _currentUser = new UserConfig { Username = u, Port = p };
                         JsonManager.SaveConfig(_currentUser);
 
-                        // [FIX 2] Đảm bảo Server chạy lại nếu user logout/login
+                        // Start Server P2P
                         if (_server == null) _ = Task.Run(() => StartServer());
                         _ = Task.Run(() => StartOnlineChecker());
 
-                        await SendToUI("INIT_USER", _currentUser);
+                        // [ĐÃ SỬA] Gửi kèm IP khi phản hồi Login thành công
+                        var loginInfo = new
+                        {
+                            _currentUser.Username,
+                            _currentUser.Port,
+                            Ip = GetLocalIP() // Thêm dòng này
+                        };
+
+                        await SendToUI("INIT_USER", loginInfo); // Gửi loginInfo thay vì _currentUser
                         await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions());
                         await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
                         break;
