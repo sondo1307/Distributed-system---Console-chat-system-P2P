@@ -5,7 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -13,32 +13,19 @@ using System.Threading.Tasks;
 
 namespace P2PFinalJson
 {
-    public static class ConsoleHelper
-    {
-        private const int GWL_STYLE = -16;
-        private const int WS_MAXIMIZEBOX = 0x10000;
-        private const int WS_THICKFRAME = 0x40000;
-        [DllImport("kernel32.dll")] private static extern IntPtr GetConsoleWindow();
-        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-        public static void SetupWindow()
-        {
-            IntPtr handle = GetConsoleWindow();
-            if (handle == IntPtr.Zero) return;
-            int style = GetWindowLong(handle, GWL_STYLE);
-            style = style & ~WS_MAXIMIZEBOX;
-            style = style & ~WS_THICKFRAME;
-            SetWindowLong(handle, GWL_STYLE, style);
-            MoveWindow(handle, 200, 100, 1500, 750, true);
-        }
-    }
-
-    // --- MODELS ---
+    // --- MODELS GIỮ NGUYÊN ---
     public enum PacketType { Hello, System, Message, Edit, Delete, Invite, Ping, FriendReq, FriendRes }
     public class UserConfig { public string Username { get; set; } public int Port { get; set; } }
     public class ChatSession { public string SessionId { get; set; } public string Name { get; set; } public DateTime LastActive { get; set; } }
-    public class Friend { public string Name { get; set; } public string Ip { get; set; } public int Port { get; set; } [System.Text.Json.Serialization.JsonIgnore] public bool IsOnline { get; set; } }
+
+    public class Friend
+    {
+        public string Name { get; set; }
+        public string Ip { get; set; }
+        public int Port { get; set; }
+        public bool IsOnline { get; set; }
+    }
+
     public class ChatPacket
     {
         public string Id { get; set; }
@@ -51,8 +38,9 @@ namespace P2PFinalJson
         public string Content { get; set; }
         public DateTime Timestamp { get; set; }
     }
+    public class UICommand { public string Cmd { get; set; } public object Data { get; set; } }
 
-    // --- JSON MANAGER ---
+    // --- JSON MANAGER GIỮ NGUYÊN ---
     public static class JsonManager
     {
         private static string DataFolder = "Data";
@@ -60,100 +48,54 @@ namespace P2PFinalJson
         private static string SessionsFile => Path.Combine(DataFolder, "sessions.json");
         private static string FriendsFile => Path.Combine(DataFolder, "friends.json");
         private static readonly object _fileLock = new object();
-        public static void Initialize(string profileName = null)
-        {
-            if (!string.IsNullOrEmpty(profileName)) DataFolder = $"Data_{profileName}";
-            if (!Directory.Exists(DataFolder)) Directory.CreateDirectory(DataFolder);
-            if (!File.Exists(SessionsFile)) File.WriteAllText(SessionsFile, "[]");
-            if (!File.Exists(FriendsFile)) File.WriteAllText(FriendsFile, "[]");
-        }
+        public static void Initialize(string profileName = null) { if (!string.IsNullOrEmpty(profileName)) DataFolder = $"Data_{profileName}"; if (!Directory.Exists(DataFolder)) Directory.CreateDirectory(DataFolder); if (!File.Exists(SessionsFile)) File.WriteAllText(SessionsFile, "[]"); if (!File.Exists(FriendsFile)) File.WriteAllText(FriendsFile, "[]"); }
         public static void DeleteAllData() { lock (_fileLock) { if (Directory.Exists(DataFolder)) { Directory.Delete(DataFolder, true); Initialize(); } } }
         public static UserConfig LoadConfig() { lock (_fileLock) { if (!File.Exists(ConfigFile)) return null; try { return JsonSerializer.Deserialize<UserConfig>(File.ReadAllText(ConfigFile)); } catch { return null; } } }
         public static void SaveConfig(UserConfig config) { lock (_fileLock) File.WriteAllText(ConfigFile, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true })); }
         public static List<ChatSession> LoadSessions() { lock (_fileLock) { if (!File.Exists(SessionsFile)) return new List<ChatSession>(); try { return JsonSerializer.Deserialize<List<ChatSession>>(File.ReadAllText(SessionsFile)) ?? new List<ChatSession>(); } catch { return new List<ChatSession>(); } } }
+
         public static void UpsertSession(string sessionId, string name)
         {
             lock (_fileLock)
             {
                 var list = LoadSessions();
                 var existing = list.FirstOrDefault(s => s.SessionId == sessionId);
-
                 if (existing != null)
                 {
                     existing.LastActive = DateTime.Now;
-
-                    // [FIX LỖI TỰ ĐỔI TÊN THÀNH UNKNOWN]
-                    // Nguyên tắc: Tên "Xịn" (User đặt) > Tên "Mặc định" (Unknown/Chat with...)
-
-                    // 1. Nếu tên mới rỗng hoặc là "Joining..." -> Bỏ qua ngay
-                    if (string.IsNullOrEmpty(name) || name == "Joining...")
-                    {
-                        // Giữ nguyên file, cập nhật mỗi LastActive
-                        File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
-                        return;
-                    }
-
-                    // 2. Kiểm tra xem tên cũ và tên mới là loại nào
-                    bool isOldNameDefault = existing.Name == "Unknown" || existing.Name == "New Chat" || existing.Name.StartsWith("Chat with");
-                    bool isNewNameDefault = name == "Unknown" || name == "New Chat" || name.StartsWith("Chat with");
-
-                    if (isOldNameDefault)
-                    {
-                        // Nếu tên cũ là mặc định (dởm), thì tên mới là gì cũng cập nhật (để nâng cấp)
-                        existing.Name = name;
-                    }
-                    else
-                    {
-                        // Nếu tên cũ là tên XỊN (User đã đặt tên phòng rồi)
-                        // Chỉ cập nhật nếu tên mới cũng là tên XỊN (để sửa tên phòng)
-                        // Tuyệt đối không để tên mặc định (NewNameDefault) ghi đè lên tên Xịn
-                        if (!isNewNameDefault)
-                        {
-                            existing.Name = name;
-                        }
-                    }
+                    bool isPlaceholder = existing.Name == "Joining..." || existing.Name == "New Chat" || existing.Name == "Unknown" || existing.Name.StartsWith("Chat with");
+                    bool isNewNameValid = !string.IsNullOrEmpty(name) && name != "Joining..." && name != "Unknown";
+                    if (isPlaceholder && isNewNameValid) existing.Name = name;
                 }
-                else
-                {
-                    // Nếu chưa có thì tạo mới bình thường
-                    list.Add(new ChatSession { SessionId = sessionId, Name = name ?? "Unknown", LastActive = DateTime.Now });
-                }
-
-                File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
+                else list.Add(new ChatSession { SessionId = sessionId, Name = name ?? "Unknown", LastActive = DateTime.Now });
+                File.WriteAllText(SessionsFile, JsonSerializer.Serialize(list));
             }
         }
+
         public static List<Friend> LoadFriends() { lock (_fileLock) { if (!File.Exists(FriendsFile)) return new List<Friend>(); try { return JsonSerializer.Deserialize<List<Friend>>(File.ReadAllText(FriendsFile)) ?? new List<Friend>(); } catch { return new List<Friend>(); } } }
-        public static bool AddFriend(string name, string ip, int port)
-        {
-            lock (_fileLock)
-            {
-                var list = LoadFriends();
-                if (list.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return false;
-                list.RemoveAll(x => x.Ip == ip && x.Port == port);
-                list.Add(new Friend { Name = name, Ip = ip, Port = port });
-                File.WriteAllText(FriendsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
-                return true;
-            }
-        }
+        public static bool AddFriend(string name, string ip, int port) { lock (_fileLock) { var list = LoadFriends(); if (list.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return false; list.RemoveAll(x => x.Ip == ip && x.Port == port); list.Add(new Friend { Name = name, Ip = ip, Port = port }); File.WriteAllText(FriendsFile, JsonSerializer.Serialize(list)); return true; } }
         public static List<ChatPacket> GetMessages(string sessionId) { lock (_fileLock) { string path = Path.Combine(DataFolder, $"msg_{sessionId}.json"); if (!File.Exists(path)) return new List<ChatPacket>(); try { return JsonSerializer.Deserialize<List<ChatPacket>>(File.ReadAllText(path)) ?? new List<ChatPacket>(); } catch { return new List<ChatPacket>(); } } }
+        public static string GetSessionName(string sessionId) { var s = LoadSessions().FirstOrDefault(x => x.SessionId == sessionId); return s?.Name; }
         public static void HandlePacketStorage(ChatPacket p)
         {
             lock (_fileLock)
             {
                 if (p.Type == PacketType.Ping || p.Type == PacketType.FriendReq || p.Type == PacketType.FriendRes) return;
-                string sessionName = null;
-                if (!string.IsNullOrEmpty(p.GroupName)) sessionName = p.GroupName;
-                else if (p.Type == PacketType.Invite) sessionName = $"Chat with {p.SenderName}";
-                if (p.SessionId != null) UpsertSession(p.SessionId, sessionName);
+                string updateName = !string.IsNullOrEmpty(p.GroupName) ? p.GroupName : (p.Type == PacketType.Invite ? $"Chat with {p.SenderName}" : null);
+                if (p.SessionId != null) UpsertSession(p.SessionId, updateName);
                 string path = Path.Combine(DataFolder, $"msg_{p.SessionId}.json");
                 List<ChatPacket> msgs = File.Exists(path) ? (JsonSerializer.Deserialize<List<ChatPacket>>(File.ReadAllText(path)) ?? new List<ChatPacket>()) : new List<ChatPacket>();
-                if (p.Type == PacketType.Message || p.Type == PacketType.Invite || p.Type == PacketType.System) { if (!msgs.Any(x => x.Id == p.Id)) msgs.Add(p); }
-                else if (p.Type == PacketType.Edit) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) target.Content = p.Content + " (edited)"; }
-                else if (p.Type == PacketType.Delete) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) msgs.Remove(target); }
-                File.WriteAllText(path, JsonSerializer.Serialize(msgs, new JsonSerializerOptions { WriteIndented = true }));
+
+                // [MESH FIX] Chỉ lưu nếu chưa có
+                if (!msgs.Any(x => x.Id == p.Id))
+                {
+                    if (p.Type == PacketType.Message || p.Type == PacketType.Invite || p.Type == PacketType.System) msgs.Add(p);
+                    else if (p.Type == PacketType.Edit) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) target.Content = p.Content + " (edited)"; }
+                    else if (p.Type == PacketType.Delete) { var target = msgs.FirstOrDefault(x => x.Id == p.TargetId); if (target != null) msgs.Remove(target); }
+                    File.WriteAllText(path, JsonSerializer.Serialize(msgs));
+                }
             }
         }
-        public static string GetSessionName(string sessionId) { var s = LoadSessions().FirstOrDefault(x => x.SessionId == sessionId); return s?.Name; }
     }
 
     class Program
@@ -161,221 +103,269 @@ namespace P2PFinalJson
         static UserConfig _currentUser;
         static TcpListener _server;
         static List<TcpClient> _neighbors = new List<TcpClient>();
-        static string _currentSessionId = null;
-        static object _uiLock = new object();
-        static List<ChatPacket> _currentViewMap = new List<ChatPacket>();
-        static List<Friend> _myFriends = new List<Friend>();
-        static ChatPacket _pendingFriendReq = null;
+        static ConcurrentDictionary<TcpClient, HashSet<string>> _socketSubscriptions = new ConcurrentDictionary<TcpClient, HashSet<string>>();
+
+        // [MESH FIX 1] Cache lưu các Message ID đã xử lý để tránh lặp vô tận
+        static ConcurrentDictionary<string, byte> _processedPacketIds = new ConcurrentDictionary<string, byte>();
+
+        static WebSocket _uiSocket;
+        static int _uiPort = 8080;
 
         static async Task Main(string[] args)
         {
-            ConsoleHelper.SetupWindow();
-            Console.InputEncoding = Encoding.Unicode;
-            Console.OutputEncoding = Encoding.Unicode;
-            string profile = args.Length > 0 ? args[0] : null;
-            JsonManager.Initialize(profile);
-            Console.Title = profile != null ? $"P2P Chat - {profile}" : "P2P Chat";
-
-            while (true)
-            {
-                if (_currentUser == null)
-                {
-                    await Screen_Login();
-                    _ = Task.Run(() => StartServer());
-                    _ = Task.Run(() => StartOnlineChecker());
-                }
-                string selectedSession = await Screen_Dashboard();
-                if (selectedSession == "RESET_APP") { _currentUser = null; continue; }
-                if (!string.IsNullOrEmpty(selectedSession)) await Screen_ChatRoom(selectedSession);
-            }
+            JsonManager.Initialize(args.Length > 0 ? args[0] : null);
+            _currentUser = JsonManager.LoadConfig();
+            _ = Task.Run(() => StartWebServer());
+            if (_currentUser != null) { _ = Task.Run(() => StartServer()); _ = Task.Run(() => StartOnlineChecker()); }
+            Console.WriteLine($"=== SERVER RUNNING: http://localhost:{_uiPort} ===");
+            Console.ReadLine();
         }
 
-        static async Task StartOnlineChecker() { /* ... */ while (true) { if (_currentUser != null) { _myFriends = JsonManager.LoadFriends(); foreach (var friend in _myFriends) { try { using (var client = new TcpClient()) { var connectTask = client.ConnectAsync(friend.Ip, friend.Port); var timeoutTask = Task.Delay(500); if (await Task.WhenAny(connectTask, timeoutTask) == connectTask && client.Connected) { friend.IsOnline = true; try { var ping = new ChatPacket { Type = PacketType.Ping }; using var w = new StreamWriter(client.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(ping)); } catch { } } else friend.IsOnline = false; } } catch { friend.IsOnline = false; } } } await Task.Delay(5000); } }
-        static async Task Screen_Login() { /* ... */ while (true) { Console.Clear(); Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine("=== P2P CHAT ==="); Console.ResetColor(); var config = JsonManager.LoadConfig(); if (config != null) { Console.WriteLine($"Welcome {config.Username} (Port: {config.Port})"); Console.WriteLine("[1] Login | [2] Change Info"); if (Console.ReadLine() == "1") { _currentUser = config; return; } } Console.Write("Name: "); string name = Console.ReadLine(); if (!name.Any(char.IsLetter)) continue; Console.Write("Port (e.g., 9000): "); if (int.TryParse(Console.ReadLine(), out int port)) { _currentUser = new UserConfig { Username = name, Port = port }; JsonManager.SaveConfig(_currentUser); return; } } }
-
-        // [DASHBOARD - Đã sửa lỗi Join]
-        static async Task<string> Screen_Dashboard()
+        static async Task StartWebServer()
         {
-            _currentSessionId = null;
+            HttpListener listener = new HttpListener();
+            listener.Prefixes.Add($"http://localhost:{_uiPort}/");
+            listener.Start();
             while (true)
             {
-                Console.Clear();
-                Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine($"=== DASHBOARD: {_currentUser.Username} ===");
-                Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine($"[INFO] IP: {GetLocalIP()} | PORT: {_currentUser.Port}"); Console.ResetColor();
-                Console.WriteLine("NEUTRAL COMMAND: [N] New Chat | [J] Join | [RESET] Reset Data | [Ctrl+R] Refresh");
-                Console.WriteLine("PHONEBOOK COMMAND: [F] Add friend | [L] List friends");
-
-                if (_pendingFriendReq != null) { Console.ForegroundColor = ConsoleColor.Red; Console.WriteLine($"[ALERT] {_pendingFriendReq.SenderInfo} ({_pendingFriendReq.SenderName}) want to add friend (Y/N)."); Console.ResetColor(); }
-                Console.WriteLine("-------------------------------------------------------------");
-                var sessions = JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList();
-                for (int i = 0; i < sessions.Count; i++) Console.WriteLine($"[{i + 1}] {sessions[i].Name} (ID: {sessions[i].SessionId})");
-                Console.Write("> ");
-
-                string input = ReadInputWithHotkeys();
-                if (input == "CMD_REFRESH") continue; if (string.IsNullOrEmpty(input)) continue;
-
-                if (_pendingFriendReq != null) { if (input.Equals("Y", StringComparison.OrdinalIgnoreCase)) { var parts = _pendingFriendReq.SenderInfo.Split(':'); if (parts.Length == 2) { JsonManager.AddFriend(_pendingFriendReq.SenderName, parts[0], int.Parse(parts[1])); Console.WriteLine($"Added {_pendingFriendReq.SenderName}."); _ = SendFriendResponse(parts[0], int.Parse(parts[1]), true); } _pendingFriendReq = null; Thread.Sleep(1500); continue; } else if (input.Equals("N", StringComparison.OrdinalIgnoreCase)) { Console.WriteLine("Ignored."); _pendingFriendReq = null; Thread.Sleep(1000); continue; } }
-
-                if (input.Equals("F", StringComparison.OrdinalIgnoreCase)) { Console.Write("Partner IP: "); string ip = Console.ReadLine(); Console.Write("Partner Port: "); int.TryParse(Console.ReadLine(), out int p); Console.WriteLine("Sending request..."); _ = SendFriendRequest(ip, p); Console.WriteLine("Sent!"); Thread.Sleep(2000); }
-                else if (input.Equals("L", StringComparison.OrdinalIgnoreCase)) { Console.Clear(); Console.WriteLine("--- Friends List ---"); foreach (var f in _myFriends) { Console.Write($"- {f.Name} ({f.Ip}:{f.Port}): "); if (f.IsOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine("ONLINE"); } else { Console.ForegroundColor = ConsoleColor.DarkGray; Console.WriteLine("OFFLINE"); } Console.ResetColor(); } Console.ReadLine(); }
-                else if (input.StartsWith("N ", StringComparison.OrdinalIgnoreCase)) { string n = input.Substring(2).Trim(); string id = GenerateShortId(); JsonManager.UpsertSession(id, string.IsNullOrEmpty(n) ? "New Chat" : n); return id; }
-                else if (input.Equals("RESET", StringComparison.OrdinalIgnoreCase)) { Console.Write("RESET? (Y/N): "); if (Console.ReadLine()?.ToUpper() == "Y") { JsonManager.DeleteAllData(); return "RESET_APP"; } }
-
-                // [SỬA LẠI] Logic Join: Nếu thất bại thì không tạo phòng
-                else if (input.Equals("J", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.Write("Input: <IP> <Port> <RoomID>: ");
-                    string joinCmd = Console.ReadLine();
-                    var parts = joinCmd.Split(' ');
-                    if (parts.Length == 3 && int.TryParse(parts[1], out int p))
-                    {
-                        Console.WriteLine("Connecting...");
-                        // Chờ kết quả kết nối
-                        bool success = await ConnectAndJoin(parts[0], p, parts[2]);
-
-                        if (success)
-                        {
-                            JsonManager.UpsertSession(parts[2], "Joining...");
-                            return parts[2];
-                        }
-                        else
-                        {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("[ERROR] Connection failed! Cannot join room.");
-                            Console.ResetColor();
-                            Thread.Sleep(2000);
-                            // Quay lại vòng lặp Dashboard, KHÔNG return parts[2]
-                        }
-                    }
-                }
-                else if (int.TryParse(input, out int idx) && idx > 0 && idx <= sessions.Count) return sessions[idx - 1].SessionId;
+                var ctx = await listener.GetContextAsync();
+                if (ctx.Request.IsWebSocketRequest) ProcessWebSocket(ctx);
+                else ServeStaticFiles(ctx);
             }
         }
 
-        // [CHAT ROOM - Đã sửa /invitefriend và thông báo]
-        static async Task Screen_ChatRoom(string sessionId)
+        static void ServeStaticFiles(HttpListenerContext context)
         {
-            _currentSessionId = sessionId;
-            RedrawChat(sessionId);
-            while (true)
-            {
-                string input = Console.ReadLine(); if (string.IsNullOrWhiteSpace(input)) continue;
-                if (input == "/back") return;
-
-                // [SỬA LẠI] Tính năng invite friend chọn số 1,2,3...
-                if (input.Trim() == "/invitefriend")
-                {
-                    var availableFriends = _myFriends.ToList();
-                    if (availableFriends.Count == 0) Console.WriteLine("[SYSTEM] Contact list is empty.");
-                    else
-                    {
-                        Console.WriteLine("\n--- SELECT FRIEND TO INVITE ---");
-                        for (int i = 0; i < availableFriends.Count; i++)
-                        {
-                            var f = availableFriends[i];
-                            string st = f.IsOnline ? "ONLINE" : "OFFLINE";
-                            Console.Write($"[{i + 1}] ");
-                            if (f.IsOnline) Console.ForegroundColor = ConsoleColor.Green;
-                            else Console.ForegroundColor = ConsoleColor.DarkGray;
-                            Console.WriteLine($"{f.Name} ({st})");
-                            Console.ResetColor();
-                        }
-                        Console.WriteLine("[0] Cancel");
-                        Console.Write("Enter number: ");
-                        string c = Console.ReadLine();
-
-                        if (int.TryParse(c, out int idx) && idx > 0 && idx <= availableFriends.Count)
-                        {
-                            var t = availableFriends[idx - 1];
-                            Console.WriteLine($"Inviting {t.Name}...");
-                            bool ok = await ConnectAndJoin(t.Ip, t.Port, sessionId);
-                            if (ok) Console.WriteLine($"[SUCCESS] Invited {t.Name} to the room."); // [THÊM] Thông báo thành công
-                            else Console.WriteLine($"[ERROR] Cannot connect to {t.Name}.");
-                        }
-                    }
-                    Thread.Sleep(1500); RedrawChat(sessionId); continue;
-                }
-
-                // [SỬA LẠI] Invite thường cũng thông báo thành công
-                else if (input.StartsWith("/invite "))
-                {
-                    var p = input.Split(' ');
-                    if (p.Length == 3)
-                    {
-                        bool ok = await ConnectAndJoin(p[1], int.Parse(p[2]), sessionId);
-                        if (ok) Console.WriteLine($"[SUCCESS] Invited user at {p[1]}:{p[2]}.");
-                        else Console.WriteLine("[ERROR] Invite failed.");
-                    }
-                }
-
-                else if (input.StartsWith("/join ")) { var p = input.Split(' '); if (p.Length == 4) await ConnectAndJoin(p[1], int.Parse(p[2]), p[3]); }
-                else if (input.StartsWith("/edit ")) { var p = input.Split(' ', 3); if (p.Length == 3 && int.TryParse(p[1], out int i)) HandleEditCommand(i, p[2], sessionId); }
-                else if (input.StartsWith("/delete ")) { var p = input.Split(' '); if (p.Length == 2 && int.TryParse(p[1], out int i)) HandleDeleteCommand(i, sessionId); }
-                else { var packet = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = sessionId, Type = PacketType.Message, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = input, Timestamp = DateTime.Now }; ProcessPacket(packet); Broadcast(packet); }
-            }
+            string path = context.Request.Url.AbsolutePath == "/" ? "index.html" : context.Request.Url.AbsolutePath.TrimStart('/');
+            if (File.Exists(path)) { byte[] buf = File.ReadAllBytes(path); context.Response.ContentLength64 = buf.Length; context.Response.OutputStream.Write(buf, 0, buf.Length); }
+            else context.Response.StatusCode = 404;
+            context.Response.OutputStream.Close();
         }
 
-        static void StartServer() { try { if (_server == null) { _server = new TcpListener(IPAddress.Any, _currentUser.Port); _server.Start(); _ = Task.Run(async () => { while (true) { try { var client = await _server.AcceptTcpClientAsync(); lock (_uiLock) _neighbors.Add(client); _ = Task.Run(() => HandleClient(client)); } catch { break; } } }); } } catch { } }
-        static async Task HandleClient(TcpClient client) { try { using var reader = new StreamReader(client.GetStream()); while (client.Connected) { string json = await reader.ReadLineAsync(); if (json == null) break; var packet = JsonSerializer.Deserialize<ChatPacket>(json); if (packet.Type == PacketType.Ping) continue; if (packet.Type == PacketType.FriendReq) { _pendingFriendReq = packet; if (_currentSessionId == null) { Console.WriteLine(); Console.ForegroundColor = ConsoleColor.Red; Console.WriteLine($"[ALERT] {packet.SenderInfo} ({packet.SenderName}) want to add friend (Y/N)."); Console.ResetColor(); Console.Write("> "); } continue; } if (packet.Type == PacketType.FriendRes && packet.Content == "YES") { var parts = packet.SenderInfo.Split(':'); if (parts.Length == 2) { JsonManager.AddFriend(packet.SenderName, parts[0], int.Parse(parts[1])); Console.WriteLine(); Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[SUCCESS] {packet.SenderName} accepted request!"); Console.ResetColor(); if (_currentSessionId == null) Console.Write("> "); } continue; } if (packet.Type == PacketType.Invite) { string realName = JsonManager.GetSessionName(packet.SessionId); if (!string.IsNullOrEmpty(realName) && realName != "Joining...") { var reply = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = packet.SessionId, GroupName = realName, Type = PacketType.System, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = $"Welcome to {realName}!", Timestamp = DateTime.Now }; try { var w = new StreamWriter(client.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(reply)); } catch { } } } ProcessPacket(packet); } } catch { } finally { lock (_uiLock) _neighbors.Remove(client); } }
-        static async Task SendFriendRequest(string ip, int port) { try { using TcpClient c = new TcpClient(); await c.ConnectAsync(ip, port); var packet = new ChatPacket { Id = Guid.NewGuid().ToString(), Type = PacketType.FriendReq, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Timestamp = DateTime.Now }; using var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(packet)); } catch { Console.WriteLine($"[ERROR] Cannot connect to {ip}:{port}"); } }
-        static async Task SendFriendResponse(string ip, int port, bool accepted) { try { using TcpClient c = new TcpClient(); await c.ConnectAsync(ip, port); var packet = new ChatPacket { Id = Guid.NewGuid().ToString(), Type = PacketType.FriendRes, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = accepted ? "YES" : "NO", Timestamp = DateTime.Now }; using var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(packet)); } catch { } }
-        static void ProcessPacket(ChatPacket p) { JsonManager.HandlePacketStorage(p); if (_currentSessionId == p.SessionId) RedrawChat(p.SessionId); }
-        static void Broadcast(ChatPacket p) { string json = JsonSerializer.Serialize(p); lock (_uiLock) { foreach (var c in _neighbors) { try { var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; w.WriteLine(json); } catch { } } } }
-        static void HandleEditCommand(int index, string newContent, string sessionId) { if (index > 0 && index <= _currentViewMap.Count) { var target = _currentViewMap[index - 1]; if (target.SenderName == _currentUser.Username) { var p = new ChatPacket { Id = Guid.NewGuid().ToString(), TargetId = target.Id, SessionId = sessionId, Type = PacketType.Edit, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = newContent, Timestamp = DateTime.Now }; ProcessPacket(p); Broadcast(p); } else Console.WriteLine("[ERROR] Only edit yours."); } }
-        static void HandleDeleteCommand(int index, string sessionId) { if (index > 0 && index <= _currentViewMap.Count) { var target = _currentViewMap[index - 1]; if (target.SenderName == _currentUser.Username) { var p = new ChatPacket { Id = Guid.NewGuid().ToString(), TargetId = target.Id, SessionId = sessionId, Type = PacketType.Delete, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Timestamp = DateTime.Now }; ProcessPacket(p); Broadcast(p); } else Console.WriteLine("[ERROR] Only delete yours."); } }
-        static void RedrawChat(string sessionId) { lock (_uiLock) { Console.Clear(); Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine($"=== ROOM ID: {sessionId} ==="); Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine($"[MY INFO] IP: {GetLocalIP()} | Port: {_currentUser.Port}"); Console.ResetColor(); Console.WriteLine("Commands: /back, /invite <IP> <Port>, /edit, /delete, /invitefriend"); Console.WriteLine("---------------------------------------------------------"); var msgs = JsonManager.GetMessages(sessionId).OrderBy(x => x.Timestamp).ToList(); _currentViewMap.Clear(); int idx = 0; foreach (var m in msgs) { _currentViewMap.Add(m); idx++; Console.ForegroundColor = ConsoleColor.Cyan; Console.Write($"[{idx}] "); if (m.Type == PacketType.Invite) { Console.ForegroundColor = ConsoleColor.Magenta; Console.WriteLine($"[SYSTEM] {m.SenderName}: {m.Content}"); } else if (m.SenderName == _currentUser.Username) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"You: {m.Content}"); } else { Console.ForegroundColor = ConsoleColor.White; Console.WriteLine($"{m.SenderName}: {m.Content}"); } } Console.ResetColor(); Console.WriteLine("---------------------------------------------------------"); Console.Write("> "); } }
-        static string ReadInputWithHotkeys() { StringBuilder buffer = new StringBuilder(); while (true) { var keyInfo = Console.ReadKey(true); if (keyInfo.Modifiers == ConsoleModifiers.Control && keyInfo.Key == ConsoleKey.R) return "CMD_REFRESH"; if (keyInfo.Key == ConsoleKey.Enter) { Console.WriteLine(); return buffer.ToString(); } if (keyInfo.Key == ConsoleKey.Backspace) { if (buffer.Length > 0) { buffer.Length--; Console.Write("\b \b"); } } else if (!char.IsControl(keyInfo.KeyChar)) { buffer.Append(keyInfo.KeyChar); Console.Write(keyInfo.KeyChar); } } }
-        static string GetLocalIP() { var host = Dns.GetHostEntry(Dns.GetHostName()); foreach (var ip in host.AddressList) if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString(); return "127.0.0.1"; }
-        private static string GenerateShortId() { const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; Random random = new Random(); return new string(Enumerable.Repeat(chars, 6).Select(s => s[random.Next(s.Length)]).ToArray()); }
+        static async void ProcessWebSocket(HttpListenerContext context)
+        {
+            var wsContext = await context.AcceptWebSocketAsync(null);
+            _uiSocket = wsContext.WebSocket;
+            if (_currentUser != null)
+            {
+                var userInfo = new { _currentUser.Username, _currentUser.Port, Ip = GetLocalIP() };
+                await SendToUI("INIT_USER", userInfo);
+                await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions().OrderByDescending(x => x.LastActive).ToList());
+                await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
+            }
+            byte[] buffer = new byte[4096];
+            try { while (_uiSocket.State == WebSocketState.Open) { var result = await _uiSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None); if (result.MessageType == WebSocketMessageType.Close) break; HandleUICommand(Encoding.UTF8.GetString(buffer, 0, result.Count)); } } catch { }
+        }
 
-        // [ĐÃ SỬA] Thêm logic gửi kèm lịch sử chat khi mời bạn
-        static async Task<bool> ConnectAndJoin(string ip, int port, string targetSessionId)
+        static async void HandleUICommand(string json)
         {
             try
             {
-                TcpClient c = new TcpClient();
-                // Timeout logic 2s
-                var connectTask = c.ConnectAsync(ip, port);
-                var timeoutTask = Task.Delay(2000);
-                if (await Task.WhenAny(connectTask, timeoutTask) == timeoutTask) { c.Dispose(); return false; }
-                await connectTask;
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var cmdObj = JsonSerializer.Deserialize<UICommand>(json, options);
+                if (cmdObj == null || cmdObj.Data == null) return;
+                JsonElement data = (JsonElement)cmdObj.Data;
 
-                lock (_uiLock) _neighbors.Add(c);
-                string myGroupName = JsonManager.GetSessionName(targetSessionId);
-
-                // 1. Gửi gói tin Invite đầu tiên
-                var packet = new ChatPacket
+                switch (cmdObj.Cmd)
                 {
-                    Id = Guid.NewGuid().ToString(),
-                    SessionId = targetSessionId,
-                    GroupName = myGroupName,
-                    Type = PacketType.Invite,
-                    SenderName = _currentUser.Username,
-                    SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}",
-                    Content = "Hello! I am added you to this group",
-                    Timestamp = DateTime.Now
-                };
-                var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
-                await w.WriteLineAsync(JsonSerializer.Serialize(packet));
+                    case "LOGIN":
+                        if (data.ValueKind == JsonValueKind.Undefined) return;
+                        string u = data.GetProperty("username").GetString();
+                        int p = data.GetProperty("port").ValueKind == JsonValueKind.String ? int.Parse(data.GetProperty("port").GetString()) : data.GetProperty("port").GetInt32();
+                        _currentUser = new UserConfig { Username = u, Port = p };
+                        JsonManager.SaveConfig(_currentUser);
+                        if (_server == null) _ = Task.Run(() => StartServer());
+                        _ = Task.Run(() => StartOnlineChecker());
+                        var loginInfo = new { _currentUser.Username, _currentUser.Port, Ip = GetLocalIP() };
+                        await SendToUI("INIT_USER", loginInfo);
+                        await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions());
+                        await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends());
+                        break;
+                    case "RESET_APP":
+                        try { JsonManager.DeleteAllData(); _currentUser = null; _processedPacketIds.Clear(); await SendToUI("RESET_SUCCESS", "Done"); } catch (Exception ex) { await SendToUI("ALERT", "Error: " + ex.Message); }
+                        break;
+                    case "GET_MESSAGES":
+                        await SendToUI("UPDATE_MESSAGES", JsonManager.GetMessages(data.GetProperty("sessionId").GetString()));
+                        break;
+                    case "SEND_MSG":
+                        string tSid = data.GetProperty("sessionId").GetString();
+                        string content = data.GetProperty("content").GetString();
+                        string gName = JsonManager.GetSessionName(tSid);
+                        var pkt = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = tSid, GroupName = gName, Type = PacketType.Message, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = content, Timestamp = DateTime.Now };
 
-                // [ĐOẠN CODE MỚI] 2. Bơm lịch sử chat sang cho người được mời
-                // Vì họ mới vào, họ chưa có gì cả, mình phải gửi cho họ
-                var history = JsonManager.GetMessages(targetSessionId);
-                if (history.Count > 0)
-                {
-                    foreach (var oldMsg in history)
-                    {
-                        // Chỉ gửi tin nhắn văn bản
-                        if (oldMsg.Type == PacketType.Message)
+                        // Xử lý gói tin của chính mình
+                        _processedPacketIds.TryAdd(pkt.Id, 0); // Đánh dấu đã xử lý
+                        ProcessPacket(pkt);
+                        Broadcast(pkt, null); // Gửi cho tất cả hàng xóm
+                        break;
+                    case "CREATE_ROOM":
+                        string rName = data.GetProperty("roomName").GetString();
+                        if (!string.IsNullOrEmpty(rName)) { JsonManager.UpsertSession(Guid.NewGuid().ToString().Substring(0, 6).ToUpper(), rName); await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions()); }
+                        break;
+                    case "JOIN_ROOM":
+                        string jRid = data.GetProperty("roomId").GetString();
+                        if (await ConnectAndJoin(data.GetProperty("ip").GetString(), data.GetProperty("port").GetInt32(), jRid))
                         {
-                            // Delay cực ngắn để tránh dính gói tin (TCP Stream issue)
-                            await Task.Delay(10);
-                            await w.WriteLineAsync(JsonSerializer.Serialize(oldMsg));
+                            JsonManager.UpsertSession(jRid, "Joining...");
+                            await SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions());
+                            await SendToUI("ALERT", "Joined!");
+                        }
+                        else await SendToUI("ALERT", "Failed.");
+                        break;
+                    case "ADD_FRIEND_REQ":
+                        await SendFriendRequest(data.GetProperty("ip").GetString(), data.GetProperty("port").GetInt32());
+                        await SendToUI("ALERT", "Sent!");
+                        break;
+                    case "RESPOND_FRIEND_REQ":
+                        string rIp = data.GetProperty("ip").GetString();
+                        int rPort = data.GetProperty("port").GetInt32();
+                        bool acc = data.GetProperty("accepted").GetBoolean();
+                        if (acc) { JsonManager.AddFriend(data.GetProperty("name").GetString(), rIp, rPort); await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends()); }
+                        await SendFriendResponse(rIp, rPort, acc);
+                        break;
+                    case "INVITE_FRIEND":
+                    case "INVITE_BY_IP":
+                        string iIp = data.GetProperty("ip").GetString();
+                        int iPort = data.GetProperty("port").GetInt32();
+                        string iRoom = data.GetProperty("roomId").GetString();
+                        await SendToUI("ALERT", await ConnectAndJoin(iIp, iPort, iRoom) ? "Invited!" : "Failed.");
+                        break;
+                    case "EDIT_MSG":
+                        string eId = data.GetProperty("msgId").GetString();
+                        string nTx = data.GetProperty("newContent").GetString();
+                        string sId = data.GetProperty("sessionId").GetString();
+                        var ePkt = new ChatPacket { Id = Guid.NewGuid().ToString(), TargetId = eId, SessionId = sId, Type = PacketType.Edit, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = nTx, Timestamp = DateTime.Now };
+                        _processedPacketIds.TryAdd(ePkt.Id, 0);
+                        ProcessPacket(ePkt); Broadcast(ePkt, null);
+                        break;
+                    case "DELETE_MSG":
+                        string dId = data.GetProperty("msgId").GetString();
+                        string dsId = data.GetProperty("sessionId").GetString();
+                        var dPkt = new ChatPacket { Id = Guid.NewGuid().ToString(), TargetId = dId, SessionId = dsId, Type = PacketType.Delete, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Timestamp = DateTime.Now };
+                        _processedPacketIds.TryAdd(dPkt.Id, 0);
+                        ProcessPacket(dPkt); Broadcast(dPkt, null);
+                        break;
+                }
+            }
+            catch (Exception ex) { Console.WriteLine("CMD ERR: " + ex.Message); }
+        }
+
+        static async Task SendToUI(string cmd, object data) { if (_uiSocket != null && _uiSocket.State == WebSocketState.Open) await _uiSocket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { cmd, data }))), WebSocketMessageType.Text, true, CancellationToken.None); }
+
+        static void StartServer() { try { if (_server == null) { _server = new TcpListener(IPAddress.Any, _currentUser.Port); _server.Start(); _ = Task.Run(async () => { while (true) { try { var c = await _server.AcceptTcpClientAsync(); _neighbors.Add(c); _ = Task.Run(() => HandleClient(c)); } catch { break; } } }); } } catch { } }
+
+        static async Task HandleClient(TcpClient c)
+        {
+            _socketSubscriptions.TryAdd(c, new HashSet<string>());
+            try
+            {
+                using var r = new StreamReader(c.GetStream());
+                while (c.Connected)
+                {
+                    string j = await r.ReadLineAsync(); if (j == null) break; var p = JsonSerializer.Deserialize<ChatPacket>(j);
+
+                    if (p.Type == PacketType.Ping) continue;
+
+                    // Cập nhật subscription
+                    if (!string.IsNullOrEmpty(p.SessionId))
+                    {
+                        if (_socketSubscriptions.ContainsKey(c)) _socketSubscriptions[c].Add(p.SessionId);
+                    }
+
+                    // Handshake logic (Invite, FriendReq, FriendRes...)
+                    if (p.Type == PacketType.Invite)
+                    {
+                        var w = new StreamWriter(c.GetStream()) { AutoFlush = true };
+                        string hostRoomName = JsonManager.GetSessionName(p.SessionId);
+                        if (!string.IsNullOrEmpty(hostRoomName) && hostRoomName != "Joining..." && hostRoomName != "Unknown")
+                        {
+                            var infoPkt = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = p.SessionId, GroupName = hostRoomName, Type = PacketType.System, SenderName = "System", Content = $"Joined room: {hostRoomName}", Timestamp = DateTime.Now };
+                            await w.WriteLineAsync(JsonSerializer.Serialize(infoPkt));
+                        }
+                        var history = JsonManager.GetMessages(p.SessionId);
+                        foreach (var oldMsg in history)
+                        {
+                            if (oldMsg.Type == PacketType.Message || oldMsg.Type == PacketType.System)
+                            {
+                                await Task.Delay(5); await w.WriteLineAsync(JsonSerializer.Serialize(oldMsg));
+                            }
                         }
                     }
-                }
-                // -------------------------------------------------------------
 
+                    if (p.Type == PacketType.FriendReq) { await SendToUI("FRIEND_REQ_RECEIVED", new { name = p.SenderName, ip = p.SenderInfo.Split(':')[0], port = int.Parse(p.SenderInfo.Split(':')[1]) }); continue; }
+                    if (p.Type == PacketType.FriendRes) { if (p.Content == "YES") { JsonManager.AddFriend(p.SenderName, p.SenderInfo.Split(':')[0], int.Parse(p.SenderInfo.Split(':')[1])); await SendToUI("UPDATE_FRIENDS", JsonManager.LoadFriends()); await SendToUI("ALERT", $"{p.SenderName} accepted!"); } continue; }
+
+                    // [MESH FIX 2] LOGIC ROUTING / RELAYING
+                    // Chỉ relay các gói tin Chat/Edit/Delete
+                    if (p.Type == PacketType.Message || p.Type == PacketType.Edit || p.Type == PacketType.Delete || p.Type == PacketType.System)
+                    {
+                        // Kiểm tra xem đã xử lý gói tin này chưa (tránh vòng lặp)
+                        if (_processedPacketIds.ContainsKey(p.Id)) continue;
+
+                        // Đánh dấu đã xử lý
+                        _processedPacketIds.TryAdd(p.Id, 0);
+
+                        // 1. Xử lý cho bản thân (Lưu + Hiện lên UI)
+                        ProcessPacket(p);
+
+                        // 2. [QUAN TRỌNG] Forward (Relay) cho tất cả các kết nối KHÁC
+                        // (Trừ thằng gửi gói tin này cho mình - là thằng 'c')
+                        Broadcast(p, c);
+                    }
+                }
+            }
+            catch { }
+            finally { _neighbors.Remove(c); _socketSubscriptions.TryRemove(c, out _); }
+        }
+
+        static void ProcessPacket(ChatPacket p) { JsonManager.HandlePacketStorage(p); _ = SendToUI("UPDATE_MESSAGES", JsonManager.GetMessages(p.SessionId)); _ = SendToUI("UPDATE_SESSIONS", JsonManager.LoadSessions()); }
+
+        // [MESH FIX 3] Broadcast loại trừ người gửi (excludeClient)
+        static void Broadcast(ChatPacket p, TcpClient excludeClient)
+        {
+            string j = JsonSerializer.Serialize(p);
+            foreach (var c in _neighbors.ToList())
+            {
+                // Không gửi ngược lại cho người vừa gửi tin cho mình
+                if (c == excludeClient) continue;
+
+                try
+                {
+                    bool shouldSend = true;
+                    if (!string.IsNullOrEmpty(p.SessionId))
+                    {
+                        if (_socketSubscriptions.TryGetValue(c, out var sessions)) { if (!sessions.Contains(p.SessionId)) shouldSend = false; }
+                        else shouldSend = false;
+                    }
+                    if (shouldSend) { var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; w.WriteLine(j); }
+                }
+                catch { }
+            }
+        }
+
+        static async Task StartOnlineChecker()
+        {
+            while (true)
+            {
+                if (_currentUser != null) { var fs = JsonManager.LoadFriends(); await Task.WhenAll(fs.Select(async f => f.IsOnline = await PingUser(f.Ip, f.Port))); await SendToUI("UPDATE_FRIENDS", fs); }
+                await Task.Delay(5000);
+            }
+        }
+
+        static async Task<bool> PingUser(string ip, int port) { try { using (var c = new TcpClient()) { var t = c.ConnectAsync(ip, port); if (await Task.WhenAny(t, Task.Delay(500)) == t) return true; } } catch { } return false; }
+        static async Task SendFriendRequest(string ip, int port) { try { using TcpClient c = new TcpClient(); await c.ConnectAsync(ip, port); var p = new ChatPacket { Id = Guid.NewGuid().ToString(), Type = PacketType.FriendReq, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Timestamp = DateTime.Now }; using var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(p)); } catch { } }
+        static async Task SendFriendResponse(string ip, int port, bool accepted) { try { using TcpClient c = new TcpClient(); await c.ConnectAsync(ip, port); var p = new ChatPacket { Id = Guid.NewGuid().ToString(), Type = PacketType.FriendRes, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = accepted ? "YES" : "NO", Timestamp = DateTime.Now }; using var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(p)); } catch { } }
+        static string GetLocalIP() { var host = Dns.GetHostEntry(Dns.GetHostName()); foreach (var ip in host.AddressList) if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString(); return "127.0.0.1"; }
+        static async Task<bool> ConnectAndJoin(string ip, int port, string tSid)
+        {
+            try
+            {
+                TcpClient c = new TcpClient(); await c.ConnectAsync(ip, port); _neighbors.Add(c); _socketSubscriptions.TryAdd(c, new HashSet<string> { tSid });
+                string gName = JsonManager.GetSessionName(tSid);
+                var p = new ChatPacket { Id = Guid.NewGuid().ToString(), SessionId = tSid, GroupName = gName, Type = PacketType.Invite, SenderName = _currentUser.Username, SenderInfo = $"{GetLocalIP()}:{_currentUser.Port}", Content = "Joined", Timestamp = DateTime.Now };
+                var w = new StreamWriter(c.GetStream()) { AutoFlush = true }; await w.WriteLineAsync(JsonSerializer.Serialize(p));
+                var h = JsonManager.GetMessages(tSid);
+                foreach (var m in h) if (m.Type == PacketType.Message) { await Task.Delay(10); await w.WriteLineAsync(JsonSerializer.Serialize(m)); }
                 _ = Task.Run(() => HandleClient(c));
                 return true;
             }
